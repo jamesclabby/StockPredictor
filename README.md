@@ -48,10 +48,48 @@ A Python script that fetches financial news for specified stock tickers and perf
 
 ## Usage
 
+### Command Line Interface
+
 Run the script:
 ```bash
 python financial_news_analyzer.py
 ```
+
+### Web Interface (Streamlit)
+
+For an interactive web interface with visualizations:
+
+1. **Install additional dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Launch the web app:**
+   ```bash
+   python run_app.py
+   ```
+   
+   Or directly with Streamlit:
+   ```bash
+   streamlit run streamlit_app.py
+   ```
+
+3. **Access the web interface:**
+   - The app will automatically open in your browser
+   - If not, go to: http://localhost:8501
+
+### Web App Features
+
+- **Interactive Ticker Selection**: Multi-select dropdown with popular stocks
+- **Custom Ticker Input**: Add any ticker not in the dropdown
+- **Real-time Analysis**: Live sentiment analysis with progress indicators
+- **Interactive Visualizations**: 
+  - Sentiment distribution pie charts
+  - Confidence score bar charts
+  - Color-coded results (green=positive, red=negative)
+- **Detailed Results**: Individual article analysis with confidence scores
+- **Export Functionality**: Download results as CSV
+- **Responsive Design**: Works on desktop and mobile devices
 
 ## Configuration
 
@@ -135,10 +173,53 @@ The script includes comprehensive error handling with the following features:
 
 ## Dependencies
 
+### Core Dependencies
 - `requests`: HTTP library for API calls
 - `python-dotenv`: Environment variable management
 - `transformers`: Hugging Face transformers library
 - `torch`: PyTorch backend for transformers
+
+### Web Interface Dependencies
+- `streamlit`: Web application framework
+- `plotly`: Interactive visualizations
+- `pandas`: Data manipulation and analysis
+- `numpy`: Numerical computing
+
+## File Structure
+
+```
+StockAnalysis/
+├── financial_news_analyzer.py    # Core analysis engine
+├── streamlit_app.py              # Web interface
+├── run_app.py                    # Launch script
+├── requirements.txt              # Python dependencies
+├── .env                          # API key (not tracked)
+├── .gitignore                    # Git ignore rules
+└── README.md                     # This file
+```
+
+## Web App Architecture
+
+The Streamlit application (`streamlit_app.py`) provides:
+
+### Frontend Components
+- **Multi-select Dropdown**: Popular stock tickers (AAPL, GOOGL, TSLA, etc.)
+- **Custom Input Field**: Add any ticker not in the dropdown
+- **Progress Indicators**: Real-time analysis progress
+- **Interactive Tabs**: Results organized by ticker
+- **Export Functionality**: CSV download with timestamps
+
+### Visualization Features
+- **Sentiment Distribution**: Pie charts showing positive/negative breakdown
+- **Confidence Scores**: Bar charts with color-coded confidence levels
+- **Color Coding**: Green for positive, red for negative sentiment
+- **Responsive Design**: Adapts to different screen sizes
+
+### Integration
+- **Session State**: Maintains analysis results across interactions
+- **Error Handling**: Graceful handling of API errors and timeouts
+- **Circuit Breaker**: Prevents API abuse during outages
+- **Real-time Updates**: Live progress and status updates
 
 ## Troubleshooting
 
