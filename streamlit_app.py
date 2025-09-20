@@ -396,33 +396,20 @@ def main():
             all_tickers = selected_tickers
             
         elif selection_method == "Search All Tickers":
-            # Search functionality
-            search_query = st.text_input(
-                "Search Tickers",
-                placeholder="Type to search (e.g., AAPL, Apple, Tech)",
-                help="Search by ticker symbol or company name"
+            # Single typeahead dropdown with multi-select
+            # Create searchable options from all tickers
+            ticker_options = [f"{ticker['symbol']} - {ticker['name']}" for ticker in st.session_state.all_tickers]
+            
+            selected_indices = st.multiselect(
+                "Search & Select Tickers",
+                ticker_options,
+                default=[],
+                help="Type to search and select multiple tickers (e.g., Apple, Bank, Tech)",
+                placeholder="Start typing to search tickers..."
             )
             
-            if search_query:
-                search_results = st.session_state.ticker_manager.search_tickers(
-                    search_query, st.session_state.all_tickers, limit=100
-                )
-                
-                if search_results:
-                    # Create options for multiselect
-                    ticker_options = [f"{ticker['symbol']} - {ticker['name']}" for ticker in search_results]
-                    selected_indices = st.multiselect(
-                        "Search Results",
-                        ticker_options,
-                        help="Select from search results"
-                    )
-                    
-                    # Extract ticker symbols
-                    all_tickers = [option.split(' - ')[0] for option in selected_indices]
-                else:
-                    st.info("No tickers found matching your search.")
-            else:
-                st.info("Enter a search term to find tickers.")
+            # Extract ticker symbols
+            all_tickers = [option.split(' - ')[0] for option in selected_indices]
                 
         else:  # Custom Input
             # Custom ticker input

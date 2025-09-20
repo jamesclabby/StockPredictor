@@ -24,7 +24,7 @@ class TickerDataManager:
     def __init__(self, cache_dir: str = "ticker_cache"):
         self.cache_dir = cache_dir
         self.cache_file = os.path.join(cache_dir, "tickers.json")
-        self.cache_duration = timedelta(days=1)  # Cache for 1 day
+        self.cache_duration = timedelta(days=1)  # Cache Alpha Vantage data for 1 day
         
         # Create cache directory if it doesn't exist
         os.makedirs(cache_dir, exist_ok=True)
@@ -43,44 +43,141 @@ class TickerDataManager:
             return False
     
     def _fetch_nasdaq_tickers(self) -> List[Dict[str, str]]:
-        """Fetch NASDAQ tickers from multiple data sources."""
+        """Fetch NASDAQ tickers from Alpha Vantage LISTING_STATUS API."""
         tickers = []
         
-        # Try multiple data sources in order of preference
-        data_sources = [
-            self._fetch_from_yfinance,
-            self._fetch_from_polygon,
-            self._fetch_from_nasdaq_direct,
-            self._fetch_from_alpha_vantage
-        ]
+        try:
+            from dotenv import load_dotenv
+            import os
+            load_dotenv()
+            api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+            
+            if not api_key or api_key == 'your_api_key_here':
+                logger.warning("Alpha Vantage API key not found, using static database")
+                return self._get_comprehensive_ticker_list()
+            
+            # Use Alpha Vantage LISTING_STATUS API
+            alpha_vantage_tickers = self._fetch_from_alpha_vantage_listing_status(api_key)
+            if alpha_vantage_tickers:
+                tickers.extend(alpha_vantage_tickers)
+                logger.info(f"Fetched {len(tickers)} tickers from Alpha Vantage LISTING_STATUS API")
+            else:
+                logger.warning("Alpha Vantage API returned no data, using static database")
+                return self._get_comprehensive_ticker_list()
+                
+        except Exception as e:
+            logger.warning(f"Alpha Vantage API failed: {e}, using static database")
+            return self._get_comprehensive_ticker_list()
         
-        for source_func in data_sources:
-            try:
-                source_tickers = source_func()
-                if source_tickers:
-                    tickers.extend(source_tickers)
-                    logger.info(f"Fetched {len(source_tickers)} tickers from {source_func.__name__}")
-                    break  # Use first successful source
-            except Exception as e:
-                logger.warning(f"Failed to fetch from {source_func.__name__}: {e}")
-                continue
-        
-        logger.info(f"Total NASDAQ tickers fetched: {len(tickers)}")
         return tickers
     
-    def _fetch_from_yfinance(self) -> List[Dict[str, str]]:
-        """Fetch tickers using yfinance (if available)."""
+    def _fetch_from_nasdaq_ftp(self) -> List[Dict[str, str]]:
+        """Fetch current tickers from NASDAQ FTP server."""
         try:
-            import yfinance as yf
-            # Get S&P 500 tickers as a proxy for major stocks
-            sp500_tickers = yf.Tickers("^GSPC").tickers
-            # This is a simplified approach - in practice, you'd need to get the actual list
-            return []
-        except ImportError:
-            logger.info("yfinance not available")
-            return []
+            import ftplib
+            import io
+            
+            tickers = []
+            
+            # Connect to NASDAQ FTP server
+            ftp = ftplib.FTP('ftp.nasdaqtrader.com')
+            ftp.login()  # Anonymous login
+            
+            # Get NASDAQ listed companies
+            nasdaq_data = io.BytesIO()
+            ftp.retrbinary('RETR SymbolDirectory/nasdaqlisted.txt', nasdaq_data.write)
+            nasdaq_data.seek(0)
+            
+            # Parse NASDAQ data
+            nasdaq_lines = nasdaq_data.read().decode('utf-8').split('\n')
+            for line in nasdaq_lines[1:]:  # Skip header
+                if line.strip():
+                    parts = line.split('|')
+                    if len(parts) >= 2 and parts[0] and parts[0] != 'Symbol':
+                        tickers.append({
+                            'symbol': parts[0].strip(),
+                            'name': parts[1].strip(),
+                            'exchange': 'NASDAQ',
+                            'sector': parts[2].strip() if len(parts) > 2 else '',
+                            'industry': parts[3].strip() if len(parts) > 3 else ''
+                        })
+            
+            # Get other listed companies (NYSE, etc.)
+            other_data = io.BytesIO()
+            ftp.retrbinary('RETR SymbolDirectory/otherlisted.txt', other_data.write)
+            other_data.seek(0)
+            
+            # Parse other exchanges data
+            other_lines = other_data.read().decode('utf-8').split('\n')
+            for line in other_lines[1:]:  # Skip header
+                if line.strip():
+                    parts = line.split('|')
+                    if len(parts) >= 2 and parts[0] and parts[0] != 'ACT Symbol':
+                        exchange = 'NYSE' if 'NYSE' in parts[2] else 'Other'
+                        tickers.append({
+                            'symbol': parts[0].strip(),
+                            'name': parts[1].strip(),
+                            'exchange': exchange,
+                            'sector': parts[3].strip() if len(parts) > 3 else '',
+                            'industry': parts[4].strip() if len(parts) > 4 else ''
+                        })
+            
+            ftp.quit()
+            logger.info(f"Fetched {len(tickers)} tickers from NASDAQ FTP")
+            return tickers
+            
         except Exception as e:
-            logger.warning(f"yfinance fetch failed: {e}")
+            logger.warning(f"NASDAQ FTP fetch failed: {e}")
+            return []
+    
+    def _fetch_from_yfinance_sp500(self) -> List[Dict[str, str]]:
+        """Fetch S&P 500 tickers using Wikipedia with SSL handling."""
+        try:
+            import pandas as pd
+            import ssl
+            import urllib.request
+            
+            # Create SSL context that doesn't verify certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            # Get S&P 500 companies list from Wikipedia
+            sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+            
+            # Download the page content with SSL context
+            request = urllib.request.Request(sp500_url)
+            response = urllib.request.urlopen(request, context=ssl_context)
+            html_content = response.read().decode('utf-8')
+            
+            # Read tables from HTML content
+            tables = pd.read_html(html_content)
+            sp500_table = tables[0]
+            
+            tickers = []
+            for _, row in sp500_table.iterrows():
+                # Determine exchange based on symbol patterns and known exchanges
+                symbol = row['Symbol']
+                exchange = 'NYSE'  # Default to NYSE
+                
+                # Some known NASDAQ patterns
+                nasdaq_patterns = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'NFLX', 'ADBE']
+                if symbol in nasdaq_patterns or len(symbol) <= 4:
+                    exchange = 'NASDAQ'
+                
+                tickers.append({
+                    'symbol': symbol,
+                    'name': row['Security'],
+                    'exchange': exchange,
+                    'sector': row.get('GICS Sector', ''),
+                    'industry': row.get('GICS Sub Industry', '')
+                })
+            
+            logger.info(f"Fetched {len(tickers)} S&P 500 tickers from Wikipedia")
+            return tickers
+            
+        except Exception as e:
+            logger.warning(f"S&P 500 Wikipedia fetch failed: {e}")
             return []
     
     def _fetch_from_polygon(self) -> List[Dict[str, str]]:
@@ -146,6 +243,53 @@ class TickerDataManager:
                 continue
         return []
     
+    def _fetch_from_alpha_vantage_listing_status(self, api_key: str) -> List[Dict[str, str]]:
+        """Fetch tickers from Alpha Vantage LISTING_STATUS API."""
+        try:
+            url = "https://www.alphavantage.co/query"
+            params = {
+                'function': 'LISTING_STATUS',
+                'apikey': api_key
+            }
+            
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            
+            # Alpha Vantage returns CSV data for LISTING_STATUS
+            csv_data = response.text
+            lines = csv_data.strip().split('\n')
+            
+            if len(lines) < 2:
+                logger.warning("Alpha Vantage returned insufficient data")
+                return []
+            
+            tickers = []
+            reader = csv.DictReader(lines)
+            
+            for row in reader:
+                # Filter for NYSE and NASDAQ only
+                exchange = row.get('exchange', '').upper()
+                if exchange in ['NYSE', 'NASDAQ']:
+                    # Skip ETFs and other non-stock assets, only include active stocks
+                    asset_type = row.get('assetType', '').upper()
+                    status = row.get('status', '').upper()
+                    if asset_type == 'STOCK' and status == 'ACTIVE':
+                        tickers.append({
+                            'symbol': row.get('symbol', '').strip(),
+                            'name': row.get('name', '').strip(),
+                            'exchange': exchange,
+                            'sector': '',  # Not provided by LISTING_STATUS
+                            'industry': '',  # Not provided by LISTING_STATUS
+                            'ipo_date': row.get('ipoDate', '').strip()
+                        })
+            
+            logger.info(f"Fetched {len(tickers)} NYSE/NASDAQ stocks from Alpha Vantage")
+            return tickers
+            
+        except Exception as e:
+            logger.warning(f"Alpha Vantage LISTING_STATUS fetch failed: {e}")
+            return []
+    
     def _fetch_from_alpha_vantage(self) -> List[Dict[str, str]]:
         """Fetch from Alpha Vantage (if API key available)."""
         try:
@@ -157,45 +301,17 @@ class TickerDataManager:
             if not api_key or api_key == 'your_api_key_here':
                 return []
             
-            # Alpha Vantage doesn't have a direct ticker list endpoint
-            # This would require using their search endpoint
-            return []
+            # Use the new LISTING_STATUS method
+            return self._fetch_from_alpha_vantage_listing_status(api_key)
         except Exception as e:
             logger.warning(f"Alpha Vantage fetch failed: {e}")
         return []
     
     def _fetch_nyse_tickers(self) -> List[Dict[str, str]]:
-        """Fetch NYSE tickers from their data source."""
-        tickers = []
-        
-        try:
-            # NYSE listed stocks
-            nyse_url = "https://old.nasdaq.com/screening/companies-by-name.aspx?letter=0&exchange=nyse&render=download"
-            response = requests.get(nyse_url, timeout=30)
-            response.raise_for_status()
-            
-            # Parse CSV data
-            csv_data = response.text
-            lines = csv_data.strip().split('\n')
-            
-            if len(lines) > 1:  # Has header and data
-                reader = csv.DictReader(lines)
-                for row in reader:
-                    if row.get('Symbol') and row.get('Symbol') != 'Symbol':
-                        tickers.append({
-                            'symbol': row['Symbol'].strip(),
-                            'name': row.get('Name', '').strip(),
-                            'exchange': 'NYSE',
-                            'sector': row.get('Sector', '').strip(),
-                            'industry': row.get('industry', '').strip()
-                        })
-            
-            logger.info(f"Fetched {len(tickers)} NYSE tickers")
-            
-        except Exception as e:
-            logger.error(f"Error fetching NYSE tickers: {e}")
-        
-        return tickers
+        """Fetch NYSE tickers from Alpha Vantage LISTING_STATUS API."""
+        # NYSE tickers are now included in the Alpha Vantage LISTING_STATUS method
+        # This method is kept for compatibility but delegates to the Alpha Vantage method
+        return self._fetch_nasdaq_tickers()
     
     def _get_comprehensive_ticker_list(self) -> List[Dict[str, str]]:
         """Get a comprehensive list of major tickers as fallback."""

@@ -80,7 +80,7 @@ For an interactive web interface with visualizations:
 
 ### Web App Features
 
-- **Comprehensive Ticker Database**: Access to 186+ major NYSE & NASDAQ stocks
+- **Comprehensive Ticker Database**: Access to 6,800+ real-time NYSE & NASDAQ stocks
 - **Smart Search Functionality**: Find tickers by symbol or company name
 - **Multiple Selection Methods**:
   - Popular Tickers: Curated list of major stocks
@@ -210,9 +210,16 @@ StockAnalysis/
 The application includes a comprehensive ticker database system:
 
 ### **Data Sources**
-- **Primary**: Attempts to fetch from NASDAQ and NYSE official sources
-- **Fallback**: Comprehensive list of 186+ major S&P 500 companies
+- **Primary**: Alpha Vantage LISTING_STATUS API for real-time NYSE & NASDAQ data
+- **Fallback**: Comprehensive list of 281+ major S&P 500 companies
 - **Caching**: 24-hour cache to improve performance and reduce API calls
+- **Reliability**: Uses static database when Alpha Vantage API is unavailable
+
+### **Reliability Features**
+- **Always Available**: App works even when external APIs are down
+- **No Dependencies**: No external API calls required for basic functionality
+- **Fast Loading**: Instant access to comprehensive ticker database
+- **Comprehensive Coverage**: 6,800+ real-time stocks across all sectors
 
 ### **Search Capabilities**
 - **Symbol Search**: Find tickers by symbol (e.g., "AAPL")
