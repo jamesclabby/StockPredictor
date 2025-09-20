@@ -80,8 +80,12 @@ For an interactive web interface with visualizations:
 
 ### Web App Features
 
-- **Interactive Ticker Selection**: Multi-select dropdown with popular stocks
-- **Custom Ticker Input**: Add any ticker not in the dropdown
+- **Comprehensive Ticker Database**: Access to 186+ major NYSE & NASDAQ stocks
+- **Smart Search Functionality**: Find tickers by symbol or company name
+- **Multiple Selection Methods**:
+  - Popular Tickers: Curated list of major stocks
+  - Search All Tickers: Search through comprehensive database
+  - Custom Input: Enter any ticker manually
 - **Real-time Analysis**: Live sentiment analysis with progress indicators
 - **Interactive Visualizations**: 
   - Sentiment distribution pie charts
@@ -191,12 +195,38 @@ The script includes comprehensive error handling with the following features:
 StockAnalysis/
 ├── financial_news_analyzer.py    # Core analysis engine
 ├── streamlit_app.py              # Web interface
+├── ticker_data_manager.py        # Ticker database management
 ├── run_app.py                    # Launch script
+├── start_app.sh                  # Simple startup script
 ├── requirements.txt              # Python dependencies
 ├── .env                          # API key (not tracked)
 ├── .gitignore                    # Git ignore rules
+├── ticker_cache/                 # Cached ticker data
 └── README.md                     # This file
 ```
+
+## Ticker Database System
+
+The application includes a comprehensive ticker database system:
+
+### **Data Sources**
+- **Primary**: Attempts to fetch from NASDAQ and NYSE official sources
+- **Fallback**: Comprehensive list of 186+ major S&P 500 companies
+- **Caching**: 24-hour cache to improve performance and reduce API calls
+
+### **Search Capabilities**
+- **Symbol Search**: Find tickers by symbol (e.g., "AAPL")
+- **Name Search**: Find by company name (e.g., "Apple")
+- **Partial Matching**: Supports partial matches for both symbols and names
+- **Real-time Results**: Instant search results as you type
+
+### **Ticker Information**
+Each ticker includes:
+- **Symbol**: Stock ticker symbol
+- **Name**: Full company name
+- **Exchange**: NYSE or NASDAQ
+- **Sector**: Business sector (Technology, Healthcare, etc.)
+- **Industry**: Specific industry classification
 
 ## Web App Architecture
 

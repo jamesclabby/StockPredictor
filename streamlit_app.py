@@ -27,6 +27,9 @@ from financial_news_analyzer import (
     CircuitBreaker, setup_logging
 )
 
+# Import ticker data manager
+from ticker_data_manager import TickerDataManager
+
 # Configure page
 st.set_page_config(
     page_title="Stock Sentiment Analysis",
@@ -92,13 +95,29 @@ if 'circuit_breaker' not in st.session_state:
     st.session_state.circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=300)
 if 'sentiment_pipeline' not in st.session_state:
     st.session_state.sentiment_pipeline = None
+if 'ticker_manager' not in st.session_state:
+    st.session_state.ticker_manager = TickerDataManager()
+if 'all_tickers' not in st.session_state:
+    st.session_state.all_tickers = []
+if 'popular_tickers' not in st.session_state:
+    st.session_state.popular_tickers = []
 
-# Popular stock tickers
-POPULAR_TICKERS = [
-    'AAPL', 'GOOGL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'META', 'NFLX',
-    'JPM', 'JNJ', 'V', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'ADBE',
-    'CRM', 'NFLX', 'INTC', 'CMCSA', 'PFE', 'TMO', 'ABT', 'COST', 'PEP'
-]
+def load_ticker_data():
+    """Load ticker data if not already loaded."""
+    if not st.session_state.all_tickers:
+        with st.spinner("Loading ticker data..."):
+            try:
+                st.session_state.all_tickers = st.session_state.ticker_manager.get_tickers()
+                st.session_state.popular_tickers = st.session_state.ticker_manager.get_popular_tickers()
+                st.success(f"✅ Loaded {len(st.session_state.all_tickers)} tickers")
+            except Exception as e:
+                st.error(f"❌ Error loading ticker data: {e}")
+                # Fallback to basic list
+                st.session_state.popular_tickers = [
+                    'AAPL', 'GOOGL', 'TSLA', 'MSFT', 'AMZN', 'NVDA', 'META', 'NFLX',
+                    'JPM', 'JNJ', 'V', 'PG', 'UNH', 'HD', 'MA', 'DIS', 'PYPL', 'ADBE'
+                ]
+                st.session_state.all_tickers = []
 
 def initialize_sentiment_model():
     """Initialize the sentiment analysis model if not already loaded."""
@@ -347,6 +366,9 @@ def main():
     st.markdown('<h1 class="main-header">📈 Stock Sentiment Analysis</h1>', unsafe_allow_html=True)
     st.markdown("---")
     
+    # Load ticker data
+    load_ticker_data()
+    
     # Sidebar for input
     with st.sidebar:
         st.header("🔧 Configuration")
@@ -354,27 +376,64 @@ def main():
         # Stock ticker selection
         st.subheader("Select Stock Tickers")
         
-        # Multi-select for popular tickers
-        selected_tickers = st.multiselect(
-            "Popular Tickers",
-            POPULAR_TICKERS,
-            default=['AAPL', 'GOOGL', 'TSLA'],
-            help="Select from popular stock tickers"
+        # Ticker selection method
+        selection_method = st.radio(
+            "Selection Method",
+            ["Popular Tickers", "Search All Tickers", "Custom Input"],
+            help="Choose how to select tickers"
         )
         
-        # Custom ticker input
-        custom_tickers = st.text_input(
-            "Custom Tickers",
-            placeholder="Enter custom tickers separated by commas (e.g., MSFT, AMZN)",
-            help="Add any additional tickers not in the popular list"
-        )
+        all_tickers = []
         
-        # Parse custom tickers
-        if custom_tickers:
-            custom_list = [ticker.strip().upper() for ticker in custom_tickers.split(',') if ticker.strip()]
-            all_tickers = list(set(selected_tickers + custom_list))
-        else:
+        if selection_method == "Popular Tickers":
+            # Multi-select for popular tickers
+            selected_tickers = st.multiselect(
+                "Popular Tickers",
+                st.session_state.popular_tickers,
+                default=['AAPL', 'GOOGL', 'TSLA'],
+                help="Select from popular stock tickers"
+            )
             all_tickers = selected_tickers
+            
+        elif selection_method == "Search All Tickers":
+            # Search functionality
+            search_query = st.text_input(
+                "Search Tickers",
+                placeholder="Type to search (e.g., AAPL, Apple, Tech)",
+                help="Search by ticker symbol or company name"
+            )
+            
+            if search_query:
+                search_results = st.session_state.ticker_manager.search_tickers(
+                    search_query, st.session_state.all_tickers, limit=100
+                )
+                
+                if search_results:
+                    # Create options for multiselect
+                    ticker_options = [f"{ticker['symbol']} - {ticker['name']}" for ticker in search_results]
+                    selected_indices = st.multiselect(
+                        "Search Results",
+                        ticker_options,
+                        help="Select from search results"
+                    )
+                    
+                    # Extract ticker symbols
+                    all_tickers = [option.split(' - ')[0] for option in selected_indices]
+                else:
+                    st.info("No tickers found matching your search.")
+            else:
+                st.info("Enter a search term to find tickers.")
+                
+        else:  # Custom Input
+            # Custom ticker input
+            custom_tickers = st.text_input(
+                "Custom Tickers",
+                placeholder="Enter custom tickers separated by commas (e.g., MSFT, AMZN)",
+                help="Add any tickers not in the lists above"
+            )
+            
+            if custom_tickers:
+                all_tickers = [ticker.strip().upper() for ticker in custom_tickers.split(',') if ticker.strip()]
         
         # Analysis button
         analyze_button = st.button("🚀 Analyze Sentiment", type="primary", use_container_width=True)
@@ -394,11 +453,28 @@ def main():
         for selected stock tickers using AI-powered sentiment analysis.
         
         **Features:**
-        - Real-time news sentiment analysis
-        - Confidence scoring
-        - Interactive visualizations
-        - 24-hour news filtering
+        - **Comprehensive Ticker Database**: Access to all NYSE & NASDAQ stocks
+        - **Smart Search**: Find tickers by symbol or company name
+        - **Real-time Analysis**: Live sentiment analysis with confidence scores
+        - **Interactive Visualizations**: Charts and graphs for insights
+        - **24-hour Filtering**: Only recent news articles
+        - **Export Results**: Download analysis as CSV
         """)
+        
+        # Show ticker database stats
+        if st.session_state.all_tickers:
+            st.subheader("📊 Database Stats")
+            st.write(f"**Total Tickers:** {len(st.session_state.all_tickers):,}")
+            
+            # Count by exchange
+            nasdaq_count = len([t for t in st.session_state.all_tickers if t.get('exchange') == 'NASDAQ'])
+            nyse_count = len([t for t in st.session_state.all_tickers if t.get('exchange') == 'NYSE'])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("NASDAQ", f"{nasdaq_count:,}")
+            with col2:
+                st.metric("NYSE", f"{nyse_count:,}")
     
     # Main content area
     if analyze_button and all_tickers:

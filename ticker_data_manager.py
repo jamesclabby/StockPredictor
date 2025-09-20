@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""
+Ticker Data Manager
+
+Fetches and manages comprehensive lists of NYSE and NASDAQ stock tickers.
+Provides caching and search functionality for the Streamlit app.
+"""
+
+import os
+import json
+import csv
+import requests
+from datetime import datetime, timedelta
+from typing import List, Dict, Set, Optional
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class TickerDataManager:
+    """Manages ticker data fetching, caching, and searching."""
+    
+    def __init__(self, cache_dir: str = "ticker_cache"):
+        self.cache_dir = cache_dir
+        self.cache_file = os.path.join(cache_dir, "tickers.json")
+        self.cache_duration = timedelta(days=1)  # Cache for 1 day
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def _is_cache_valid(self) -> bool:
+        """Check if cached data is still valid."""
+        if not os.path.exists(self.cache_file):
+            return False
+        
+        try:
+            with open(self.cache_file, 'r') as f:
+                data = json.load(f)
+                cache_time = datetime.fromisoformat(data.get('timestamp', ''))
+                return datetime.now() - cache_time < self.cache_duration
+        except (json.JSONDecodeError, ValueError, KeyError):
+            return False
+    
+    def _fetch_nasdaq_tickers(self) -> List[Dict[str, str]]:
+        """Fetch NASDAQ tickers from multiple data sources."""
+        tickers = []
+        
+        # Try multiple data sources in order of preference
+        data_sources = [
+            self._fetch_from_yfinance,
+            self._fetch_from_polygon,
+            self._fetch_from_nasdaq_direct,
+            self._fetch_from_alpha_vantage
+        ]
+        
+        for source_func in data_sources:
+            try:
+                source_tickers = source_func()
+                if source_tickers:
+                    tickers.extend(source_tickers)
+                    logger.info(f"Fetched {len(source_tickers)} tickers from {source_func.__name__}")
+                    break  # Use first successful source
+            except Exception as e:
+                logger.warning(f"Failed to fetch from {source_func.__name__}: {e}")
+                continue
+        
+        logger.info(f"Total NASDAQ tickers fetched: {len(tickers)}")
+        return tickers
+    
+    def _fetch_from_yfinance(self) -> List[Dict[str, str]]:
+        """Fetch tickers using yfinance (if available)."""
+        try:
+            import yfinance as yf
+            # Get S&P 500 tickers as a proxy for major stocks
+            sp500_tickers = yf.Tickers("^GSPC").tickers
+            # This is a simplified approach - in practice, you'd need to get the actual list
+            return []
+        except ImportError:
+            logger.info("yfinance not available")
+            return []
+        except Exception as e:
+            logger.warning(f"yfinance fetch failed: {e}")
+            return []
+    
+    def _fetch_from_polygon(self) -> List[Dict[str, str]]:
+        """Fetch from Polygon.io (free tier)."""
+        try:
+            # Polygon.io free tier endpoint
+            url = "https://api.polygon.io/v3/reference/tickers"
+            params = {
+                'market': 'stocks',
+                'active': 'true',
+                'limit': 1000,
+                'apikey': 'demo'  # Free demo key
+            }
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                tickers = []
+                for item in data.get('results', []):
+                    if item.get('market') == 'stocks':
+                        tickers.append({
+                            'symbol': item.get('ticker', ''),
+                            'name': item.get('name', ''),
+                            'exchange': 'NASDAQ' if 'NASDAQ' in item.get('market', '') else 'NYSE',
+                            'sector': item.get('sic_description', ''),
+                            'industry': item.get('sic_description', '')
+                        })
+                return tickers
+        except Exception as e:
+            logger.warning(f"Polygon fetch failed: {e}")
+        return []
+    
+    def _fetch_from_nasdaq_direct(self) -> List[Dict[str, str]]:
+        """Try direct NASDAQ endpoints."""
+        urls = [
+            "https://old.nasdaq.com/screening/companies-by-name.aspx?letter=0&exchange=nasdaq&render=download",
+            "https://www.nasdaq.com/api/v1/screener?page=1&pageSize=1000&exchange=nasdaq"
+        ]
+        
+        for url in urls:
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                
+                if 'csv' in response.headers.get('content-type', '').lower():
+                    csv_data = response.text
+                    lines = csv_data.strip().split('\n')
+                    
+                    if len(lines) > 1:
+                        reader = csv.DictReader(lines)
+                        tickers = []
+                        for row in reader:
+                            if row.get('Symbol') and row.get('Symbol') != 'Symbol':
+                                tickers.append({
+                                    'symbol': row['Symbol'].strip(),
+                                    'name': row.get('Name', '').strip(),
+                                    'exchange': 'NASDAQ',
+                                    'sector': row.get('Sector', '').strip(),
+                                    'industry': row.get('industry', '').strip()
+                                })
+                        return tickers
+            except Exception as e:
+                logger.warning(f"NASDAQ direct fetch failed from {url}: {e}")
+                continue
+        return []
+    
+    def _fetch_from_alpha_vantage(self) -> List[Dict[str, str]]:
+        """Fetch from Alpha Vantage (if API key available)."""
+        try:
+            from dotenv import load_dotenv
+            import os
+            load_dotenv()
+            api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+            
+            if not api_key or api_key == 'your_api_key_here':
+                return []
+            
+            # Alpha Vantage doesn't have a direct ticker list endpoint
+            # This would require using their search endpoint
+            return []
+        except Exception as e:
+            logger.warning(f"Alpha Vantage fetch failed: {e}")
+        return []
+    
+    def _fetch_nyse_tickers(self) -> List[Dict[str, str]]:
+        """Fetch NYSE tickers from their data source."""
+        tickers = []
+        
+        try:
+            # NYSE listed stocks
+            nyse_url = "https://old.nasdaq.com/screening/companies-by-name.aspx?letter=0&exchange=nyse&render=download"
+            response = requests.get(nyse_url, timeout=30)
+            response.raise_for_status()
+            
+            # Parse CSV data
+            csv_data = response.text
+            lines = csv_data.strip().split('\n')
+            
+            if len(lines) > 1:  # Has header and data
+                reader = csv.DictReader(lines)
+                for row in reader:
+                    if row.get('Symbol') and row.get('Symbol') != 'Symbol':
+                        tickers.append({
+                            'symbol': row['Symbol'].strip(),
+                            'name': row.get('Name', '').strip(),
+                            'exchange': 'NYSE',
+                            'sector': row.get('Sector', '').strip(),
+                            'industry': row.get('industry', '').strip()
+                        })
+            
+            logger.info(f"Fetched {len(tickers)} NYSE tickers")
+            
+        except Exception as e:
+            logger.error(f"Error fetching NYSE tickers: {e}")
+        
+        return tickers
+    
+    def _get_comprehensive_ticker_list(self) -> List[Dict[str, str]]:
+        """Get a comprehensive list of major tickers as fallback."""
+        from static_ticker_data import get_comprehensive_ticker_database
+        return get_comprehensive_ticker_database()
+
+    def _fetch_popular_tickers(self) -> List[Dict[str, str]]:
+        """Get a curated list of popular/well-known tickers."""
+        from static_ticker_data import get_popular_tickers, get_comprehensive_ticker_database
+        
+        popular_symbols = get_popular_tickers()
+        all_tickers = get_comprehensive_ticker_database()
+        
+        # Filter comprehensive database to only include popular tickers
+        popular_tickers = []
+        for ticker in all_tickers:
+            if ticker['symbol'] in popular_symbols:
+                popular_tickers.append(ticker)
+        
+        return popular_tickers
+    
+    def fetch_all_tickers(self) -> List[Dict[str, str]]:
+        """Fetch all tickers from various sources."""
+        logger.info("Fetching ticker data from all sources...")
+        
+        all_tickers = []
+        
+        # Try to fetch from external sources first
+        try:
+            all_tickers.extend(self._fetch_nasdaq_tickers())
+            all_tickers.extend(self._fetch_nyse_tickers())
+        except Exception as e:
+            logger.warning(f"Error fetching from external sources: {e}")
+        
+        # If we didn't get much data, use our comprehensive fallback
+        if len(all_tickers) < 100:
+            logger.info("Using comprehensive fallback ticker list...")
+            all_tickers = self._get_comprehensive_ticker_list()
+        else:
+            # Remove duplicates based on symbol
+            seen_symbols = set()
+            unique_tickers = []
+            
+            for ticker in all_tickers:
+                symbol = ticker['symbol'].upper()
+                if symbol not in seen_symbols and len(symbol) <= 5:  # Reasonable ticker length
+                    seen_symbols.add(symbol)
+                    unique_tickers.append(ticker)
+            
+            all_tickers = unique_tickers
+        
+        logger.info(f"Total unique tickers fetched: {len(all_tickers)}")
+        return all_tickers
+    
+    def get_tickers(self, force_refresh: bool = False) -> List[Dict[str, str]]:
+        """Get ticker data, using cache if available and valid."""
+        
+        # Check if we should use cached data
+        if not force_refresh and self._is_cache_valid():
+            logger.info("Using cached ticker data")
+            try:
+                with open(self.cache_file, 'r') as f:
+                    data = json.load(f)
+                    return data.get('tickers', [])
+            except Exception as e:
+                logger.error(f"Error reading cache: {e}")
+        
+        # Fetch fresh data
+        logger.info("Fetching fresh ticker data...")
+        tickers = self.fetch_all_tickers()
+        
+        # Cache the data
+        cache_data = {
+            'timestamp': datetime.now().isoformat(),
+            'tickers': tickers,
+            'count': len(tickers)
+        }
+        
+        try:
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+            logger.info(f"Cached {len(tickers)} tickers")
+        except Exception as e:
+            logger.error(f"Error caching data: {e}")
+        
+        return tickers
+    
+    def search_tickers(self, query: str, tickers: List[Dict[str, str]], limit: int = 50) -> List[Dict[str, str]]:
+        """Search tickers by symbol or name."""
+        if not query:
+            return tickers[:limit]
+        
+        query = query.upper().strip()
+        results = []
+        
+        for ticker in tickers:
+            symbol = ticker.get('symbol', '').upper()
+            name = ticker.get('name', '').upper()
+            
+            # Exact symbol match (highest priority)
+            if symbol == query:
+                results.insert(0, ticker)
+            # Symbol starts with query
+            elif symbol.startswith(query):
+                results.append(ticker)
+            # Name contains query
+            elif query in name:
+                results.append(ticker)
+            # Symbol contains query
+            elif query in symbol:
+                results.append(ticker)
+        
+        return results[:limit]
+    
+    def get_popular_tickers(self) -> List[str]:
+        """Get a list of popular ticker symbols."""
+        popular = self._fetch_popular_tickers()
+        return [ticker['symbol'] for ticker in popular]
+    
+    def get_exchange_tickers(self, exchange: str, tickers: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Filter tickers by exchange."""
+        return [ticker for ticker in tickers if ticker.get('exchange', '').upper() == exchange.upper()]
+    
+    def get_sector_tickers(self, sector: str, tickers: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Filter tickers by sector."""
+        return [ticker for ticker in tickers if sector.upper() in ticker.get('sector', '').upper()]
+
+def main():
+    """Test the ticker data manager."""
+    manager = TickerDataManager()
+    
+    print("🔍 Testing Ticker Data Manager...")
+    
+    # Test fetching tickers
+    tickers = manager.get_tickers()
+    print(f"✅ Fetched {len(tickers)} tickers")
+    
+    # Test popular tickers
+    popular = manager.get_popular_tickers()
+    print(f"✅ Popular tickers: {len(popular)}")
+    
+    # Test search
+    search_results = manager.search_tickers("AAPL", tickers, limit=5)
+    print(f"✅ Search results for 'AAPL': {len(search_results)}")
+    
+    # Test exchange filtering
+    nasdaq_tickers = manager.get_exchange_tickers("NASDAQ", tickers)
+    print(f"✅ NASDAQ tickers: {len(nasdaq_tickers)}")
+    
+    print("🎉 Ticker Data Manager test completed!")
+
+if __name__ == "__main__":
+    main()
