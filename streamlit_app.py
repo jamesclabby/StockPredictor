@@ -270,12 +270,15 @@ def display_ticker_results(ticker: str, results: Dict):
 
 def analyze_tickers(tickers: List[str]) -> Dict:
     """Analyze sentiment for multiple tickers."""
+    print(f"🔍 DEBUG: analyze_tickers called with {len(tickers)} tickers: {tickers}")
     results = {}
     
     # Initialize API key and model
     try:
         api_key = load_api_key()
+        print(f"🔍 DEBUG: API key loaded successfully")
     except APIError as e:
+        print(f"🔍 DEBUG: API key error: {e.message}")
         st.error(f"❌ Configuration Error: {e.message}")
         return results
     
@@ -287,13 +290,14 @@ def analyze_tickers(tickers: List[str]) -> Dict:
     status_text = st.empty()
     
     for i, ticker in enumerate(tickers):
+        print(f"🔍 DEBUG: Processing ticker {i+1}/{len(tickers)}: {ticker}")
         status_text.text(f"Analyzing {ticker}...")
-        
         try:
             # Fetch news articles
             articles = fetch_news_with_retry(ticker, api_key, st.session_state.circuit_breaker)
             
             if not articles:
+                st.warning(f"⚠️ No articles found for {ticker}")
                 results[ticker] = {'articles': [], 'summary': {}}
                 continue
             
@@ -344,8 +348,13 @@ def analyze_tickers(tickers: List[str]) -> Dict:
             }
             
         except APIError as e:
-            st.error(f"❌ Error analyzing {ticker}: {e.message}")
-            results[ticker] = {'articles': [], 'summary': {}, 'error': str(e)}
+            if e.error_type == ErrorType.RATE_LIMIT_ERROR:
+                st.error(f"🚫 Rate limit exceeded for {ticker}")
+                st.warning("💡 You've reached Alpha Vantage's daily limit of 25 requests. Please try again tomorrow or upgrade to a premium plan.")
+                results[ticker] = {'articles': [], 'summary': {}, 'error': 'Rate limit exceeded'}
+            else:
+                st.error(f"❌ Error analyzing {ticker}: {e.message}")
+                results[ticker] = {'articles': [], 'summary': {}, 'error': str(e)}
         except Exception as e:
             st.error(f"❌ Unexpected error analyzing {ticker}: {e}")
             results[ticker] = {'articles': [], 'summary': {}, 'error': str(e)}
@@ -422,8 +431,18 @@ def main():
             if custom_tickers:
                 all_tickers = [ticker.strip().upper() for ticker in custom_tickers.split(',') if ticker.strip()]
         
+        # Store selected tickers in session state
+        st.session_state.selected_tickers = all_tickers
+        
         # Analysis button
         analyze_button = st.button("🚀 Analyze Sentiment", type="primary", use_container_width=True)
+        
+        # If button clicked, trigger analysis immediately
+        if analyze_button and all_tickers:
+            with st.spinner("Running analysis..."):
+                st.session_state.analysis_results = analyze_tickers(all_tickers)
+        elif analyze_button and not all_tickers:
+            st.warning("⚠️ Please select at least one ticker to analyze.")
         
         # Display selected tickers
         if all_tickers:
@@ -464,8 +483,6 @@ def main():
                 st.metric("NYSE", f"{nyse_count:,}")
     
     # Main content area
-    if analyze_button and all_tickers:
-        st.session_state.analysis_results = analyze_tickers(all_tickers)
     
     # Display results
     if st.session_state.analysis_results:

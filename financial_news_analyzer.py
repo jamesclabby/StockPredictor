@@ -177,8 +177,11 @@ def fetch_news_with_retry(ticker: str, api_key: str, circuit_breaker: CircuitBre
         }
         
         try:
-            print(f"📰 Fetching news for {ticker}...")
+            print(f"🔍 DEBUG: Making API call to Alpha Vantage for {ticker}")
+            print(f"🔍 DEBUG: URL: {url}")
+            print(f"🔍 DEBUG: Params: {params}")
             response = requests.get(url, params=params, timeout=30)
+            print(f"🔍 DEBUG: Response status: {response.status_code}")
             
             # Handle HTTP errors
             if response.status_code == 429:
@@ -203,7 +206,13 @@ def fetch_news_with_retry(ticker: str, api_key: str, circuit_breaker: CircuitBre
             
             try:
                 data = response.json()
+                print(f"🔍 DEBUG: Response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                if 'feed' in data:
+                    print(f"🔍 DEBUG: Found {len(data['feed'])} articles in feed")
+                else:
+                    print(f"🔍 DEBUG: No 'feed' key in response")
             except json.JSONDecodeError as e:
+                print(f"🔍 DEBUG: JSON decode error: {e}")
                 raise APIError(
                     f"Invalid JSON response for {ticker}: {e}",
                     ErrorType.PARSING_ERROR
@@ -212,6 +221,7 @@ def fetch_news_with_retry(ticker: str, api_key: str, circuit_breaker: CircuitBre
             # Check for API-specific errors
             if 'Error Message' in data:
                 error_msg = data['Error Message']
+                print(f"🔍 DEBUG: API Error Message for {ticker}: {error_msg}")
                 if 'Invalid API call' in error_msg:
                     raise APIError(
                         f"Invalid API call for {ticker}: {error_msg}",
@@ -223,10 +233,26 @@ def fetch_news_with_retry(ticker: str, api_key: str, circuit_breaker: CircuitBre
                         ErrorType.API_ERROR
                     )
             
+            # Check for rate limit messages
             if 'Note' in data:
-                note = data['Note']
-                if 'API call frequency' in note:
-                    # Extract retry time from note if possible
+                note_msg = data['Note']
+                print(f"🔍 DEBUG: API Note for {ticker}: {note_msg}")
+                if 'API call frequency' in note_msg or 'rate limit' in note_msg.lower():
+                    raise APIError(
+                        f"Rate limit exceeded for {ticker}: {note_msg}",
+                        ErrorType.RATE_LIMIT
+                    )
+            
+            # Check for information messages about rate limits
+            if 'Information' in data:
+                info_msg = data['Information']
+                print(f"🔍 DEBUG: API Information for {ticker}: {info_msg}")
+                if 'rate limit' in info_msg.lower() or 'requests per day' in info_msg.lower():
+                    raise APIError(
+                        f"Daily rate limit exceeded for {ticker}: {info_msg}",
+                        ErrorType.RATE_LIMIT
+                    )
+                # Extract retry time from note if possible
                     retry_after = 60  # Default to 1 minute
                     if 'per minute' in note:
                         retry_after = 60
@@ -249,6 +275,8 @@ def fetch_news_with_retry(ticker: str, api_key: str, circuit_breaker: CircuitBre
             
             articles = data.get('feed', [])
             print(f"✓ Successfully fetched {len(articles)} articles for {ticker}")
+            if not articles:
+                print(f"🔍 DEBUG: No articles in feed for {ticker}. Full response: {json.dumps(data, indent=2)[:500]}...")
             return articles
             
         except requests.exceptions.Timeout:
