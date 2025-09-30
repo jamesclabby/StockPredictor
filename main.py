@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Google Cloud Function for Daily Financial News Analysis
-Refactored from Cloud Run to Cloud Functions
+Enhanced with LangChain ReAct Agent and custom tools
 """
 
 import os
@@ -13,6 +13,14 @@ import requests
 import resend
 from google.cloud import secretmanager
 
+# LangChain imports
+from langchain.agents import AgentExecutor, create_react_agent, tool
+from langchain_openai import ChatOpenAI
+from langchain import hub
+
+# Transformers for sentiment analysis
+from transformers import pipeline
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,7 +31,11 @@ TICKERS = ['AAPL', 'GOOGL', 'TSLA']
 # Email configuration
 SENDER_EMAIL = "stocks@featureforge.dev"  # Your verified domain
 RECIPIENT_EMAIL = "jamesclabby12@gmail.com"  # Your email
-EMAIL_SUBJECT = "Daily Financial News Analysis"
+EMAIL_SUBJECT = "Daily Financial News Analysis - AI Agent Report"
+
+# Global variables for AI components (initialized when needed)
+llm = None
+sentiment_pipeline = None
 
 # Custom exceptions
 class ErrorType:
@@ -36,6 +48,29 @@ class APIError(Exception):
         self.error_type = error_type
         self.message = message
         super().__init__(message)
+
+def initialize_ai_components():
+    """
+    Initialize AI components (LLM and sentiment pipeline) when needed.
+    """
+    global llm, sentiment_pipeline
+    
+    if llm is None or sentiment_pipeline is None:
+        logger.info("Initializing AI components...")
+        try:
+            # Get OpenAI API key
+            openai_api_key = get_secret('OPENAI_API_KEY')
+            
+            # Initialize LLM
+            llm = ChatOpenAI(temperature=0, model_name="gpt-4o", api_key=openai_api_key)
+            
+            # Initialize sentiment pipeline
+            sentiment_pipeline = pipeline('sentiment-analysis', model='distilbert-base-uncased-finetuned-sst-2-english')
+            
+            logger.info("AI components initialized successfully!")
+        except Exception as e:
+            logger.error(f"Failed to initialize AI components: {e}")
+            raise
 
 def get_secret(secret_name: str) -> str:
     """
@@ -63,29 +98,18 @@ def get_secret(secret_name: str) -> str:
     
     raise ValueError(f"Secret {secret_name} not found in Secret Manager or environment variables")
 
-def is_within_24_hours(time_str: str) -> bool:
-    """
-    Check if a time string is within the last 24 hours.
-    """
-    try:
-        # Parse the time string (format: YYYYMMDDTHHMMSS)
-        if len(time_str) >= 15:
-            time_obj = datetime.strptime(time_str[:15], '%Y%m%dT%H%M%S')
-            now = datetime.now()
-            time_diff = now - time_obj
-            return time_diff.total_seconds() < 24 * 3600  # 24 hours in seconds
-        return False
-    except Exception as e:
-        logger.warning(f"Error parsing time string '{time_str}': {e}")
-        return False
+# Custom LangChain Tools
 
-def fetch_news_simple(ticker: str, api_key: str) -> List[Dict]:
+@tool
+def fetch_stock_news(ticker: str) -> str:
     """
-    Fetch news articles for a ticker using Alpha Vantage API.
+    Fetches raw news headlines from Alpha Vantage. 
+    IMPORTANT: This tool must ONLY extract and return the headline text, ignoring any pre-packaged sentiment scores.
     """
-    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
-    
     try:
+        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
+        url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
+        
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
@@ -94,71 +118,85 @@ def fetch_news_simple(ticker: str, api_key: str) -> List[Dict]:
         # Check for API errors
         if 'Information' in data:
             if 'rate limit' in data['Information'].lower():
-                raise APIError(ErrorType.RATE_LIMIT, "API rate limit exceeded")
+                return f"API rate limit exceeded for {ticker}"
             else:
-                raise APIError(ErrorType.API_ERROR, data['Information'])
+                return f"API error: {data['Information']}"
         
         if 'Note' in data:
             if 'rate limit' in data['Note'].lower():
-                raise APIError(ErrorType.RATE_LIMIT, "API rate limit exceeded")
+                return f"API rate limit exceeded for {ticker}"
             else:
-                raise APIError(ErrorType.API_ERROR, data['Note'])
+                return f"API error: {data['Note']}"
         
-        # Extract articles
+        # Extract only the raw headlines, ignoring sentiment scores
         articles = data.get('feed', [])
-        logger.info(f"Fetched {len(articles)} articles for {ticker}")
+        headlines = []
         
-        return articles
+        for article in articles:
+            title = article.get('title', '')
+            if title:
+                headlines.append(title)
         
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error for {ticker}: {e}")
-        raise APIError(ErrorType.API_ERROR, f"Request failed: {str(e)}")
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error for {ticker}: {e}")
-        raise APIError(ErrorType.API_ERROR, f"Invalid JSON response: {str(e)}")
+        if not headlines:
+            return f"No recent news headlines found for {ticker}"
+        
+        # Return headlines as a formatted string
+        headlines_text = "\n".join([f"- {headline}" for headline in headlines[:5]])  # Limit to 5 most recent
+        return f"Recent news headlines for {ticker}:\n{headlines_text}"
+        
+    except Exception as e:
+        logger.error(f"Error fetching news for {ticker}: {e}")
+        return f"Error fetching news for {ticker}: {str(e)}"
 
-def simple_sentiment_analysis(text: str) -> Dict[str, any]:
+@tool
+def analyze_headline_sentiment(headline: str) -> str:
     """
-    Simple keyword-based sentiment analysis to avoid heavy ML dependencies.
+    Analyzes a headline's sentiment using a local Hugging Face transformers model. 
+    Returns 'Positive' or 'Negative'.
     """
-    # Convert to lowercase for analysis
-    text_lower = text.lower()
-    
-    # Positive keywords
-    positive_keywords = [
-        'positive', 'good', 'great', 'excellent', 'strong', 'growth', 'profit',
-        'gain', 'rise', 'up', 'increase', 'success', 'win', 'beat', 'outperform',
-        'bullish', 'optimistic', 'surge', 'rally', 'breakthrough', 'record',
-        'milestone', 'achievement', 'expansion', 'acquisition', 'partnership'
-    ]
-    
-    # Negative keywords
-    negative_keywords = [
-        'negative', 'bad', 'poor', 'weak', 'decline', 'loss', 'fall', 'down',
-        'decrease', 'failure', 'lose', 'miss', 'underperform', 'bearish',
-        'pessimistic', 'drop', 'crash', 'crisis', 'concern', 'risk', 'warning',
-        'challenge', 'struggle', 'cut', 'layoff', 'bankruptcy', 'default'
-    ]
-    
-    # Count positive and negative keywords
-    positive_count = sum(1 for word in positive_keywords if word in text_lower)
-    negative_count = sum(1 for word in negative_keywords if word in text_lower)
-    
-    # Determine sentiment
-    if positive_count > negative_count:
-        sentiment = 'POSITIVE'
-        confidence = min(0.9, 0.5 + (positive_count - negative_count) * 0.1)
-    elif negative_count > positive_count:
-        sentiment = 'NEGATIVE'
-        confidence = min(0.9, 0.5 + (negative_count - positive_count) * 0.1)
-    else:
-        sentiment = 'NEUTRAL'
-        confidence = 0.5
-    
-    return {
-        'label': sentiment,
-        'score': confidence
-    }
+    try:
+        results = sentiment_pipeline(headline)
+        label = results[0]['label'].title()
+        score = results[0]['score']
+        return f"Sentiment: {label} (Confidence: {score:.2f})"
+    except Exception as e:
+        logger.error(f"Error analyzing sentiment for headline: {e}")
+        return f"Error analyzing sentiment: {str(e)}"
+
+@tool
+def get_stock_performance(ticker: str) -> str:
+    """
+    Gets the latest stock price and daily change from Alpha Vantage's GLOBAL_QUOTE endpoint.
+    """
+    try:
+        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={api_key}"
+        
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Check for API errors
+        if 'Information' in data:
+            return f"API error: {data['Information']}"
+        
+        if 'Note' in data:
+            return f"API error: {data['Note']}"
+        
+        quote = data.get('Global Quote', {})
+        if not quote:
+            return f"No price data available for {ticker}"
+        
+        price = quote.get('05. price', 'N/A')
+        change = quote.get('09. change', 'N/A')
+        change_percent = quote.get('10. change percent', 'N/A')
+        
+        return f"{ticker} - Current Price: ${price}, Day's Change: {change} ({change_percent})"
+        
+    except Exception as e:
+        logger.error(f"Error fetching stock performance for {ticker}: {e}")
+        return f"Error fetching stock performance for {ticker}: {str(e)}"
 
 def send_summary_email(summary_html: str) -> bool:
     """
@@ -193,155 +231,110 @@ def send_summary_email(summary_html: str) -> bool:
         logger.error(f"Error sending email: {e}")
         return False
 
-def format_analysis_summary(results: Dict) -> str:
+def format_agent_analysis_summary(agent_results: Dict) -> str:
     """
-    Format the analysis results as HTML for email.
+    Format the AI agent analysis results as HTML for email.
     """
     html_parts = [
         "<html><body>",
-        "<h1>📈 Daily Financial News Analysis</h1>",
+        "<h1>🤖 AI-Powered Financial News Analysis</h1>",
         f"<p><strong>Analysis Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>",
+        "<p><em>Powered by LangChain ReAct Agent with custom financial analysis tools</em></p>",
         "<hr>"
     ]
     
-    for ticker, data in results.items():
-        if 'error' in data:
+    for ticker, analysis in agent_results.items():
+        if 'error' in analysis:
             html_parts.append(f"<h2>❌ {ticker} - Error</h2>")
-            html_parts.append(f"<p style='color: red;'>{data['error']}</p>")
-            continue
-            
-        articles = data.get('articles', [])
-        summary = data.get('summary', {})
-        
-        if not articles:
-            html_parts.append(f"<h2>⚠️ {ticker} - No Recent Articles</h2>")
-            html_parts.append("<p>No articles found in the last 24 hours.</p>")
+            html_parts.append(f"<p style='color: red;'>{analysis['error']}</p>")
             continue
         
-        # Ticker summary
-        positive_count = summary.get('positive', 0)
-        negative_count = summary.get('negative', 0)
-        avg_confidence = summary.get('avg_confidence', 0)
+        summary = analysis.get('summary', 'No analysis available')
         
-        html_parts.append(f"<h2>📊 {ticker} Analysis Summary</h2>")
-        html_parts.append(f"<p><strong>Total Articles:</strong> {len(articles)}</p>")
-        html_parts.append(f"<p><strong>Positive:</strong> {positive_count} | <strong>Negative:</strong> {negative_count}</p>")
-        html_parts.append(f"<p><strong>Average Confidence:</strong> {avg_confidence:.1f}%</p>")
+        html_parts.append(f"<h2>📊 {ticker} AI Analysis</h2>")
+        html_parts.append(f"<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
+        html_parts.append(f"<p><strong>AI Agent Summary:</strong></p>")
+        html_parts.append(f"<p>{summary}</p>")
+        html_parts.append("</div>")
         
-        # Individual articles
-        html_parts.append("<h3>📰 Recent Articles</h3>")
-        html_parts.append("<ul>")
+        # Add any additional insights if available
+        if 'insights' in analysis:
+            html_parts.append("<h3>🔍 Additional Insights</h3>")
+            html_parts.append(f"<p>{analysis['insights']}</p>")
         
-        for article in articles:
-            title = article.get('title', 'No title')
-            sentiment = article.get('sentiment', {})
-            label = sentiment.get('label', 'UNKNOWN')
-            score = sentiment.get('score', 0) * 100
-            
-            # Color code sentiment
-            color = "green" if label == "POSITIVE" else "red" if label == "NEGATIVE" else "gray"
-            
-            html_parts.append(
-                f"<li style='margin-bottom: 10px;'>"
-                f"<strong style='color: {color};'>{label}</strong> "
-                f"({score:.1f}%) - {title}"
-                f"</li>"
-            )
-        
-        html_parts.append("</ul>")
         html_parts.append("<hr>")
     
     html_parts.extend([
-        "<p><em>This analysis was generated automatically by the Financial News Analysis system.</em></p>",
+        "<p><em>This analysis was generated by an AI agent using LangChain ReAct framework with custom financial analysis tools.</em></p>",
         "</body></html>"
     ])
     
     return "\n".join(html_parts)
 
-def analyze_tickers_simple(tickers: List[str], api_key: str) -> Dict:
+def run_ai_agent_analysis(tickers: List[str]) -> Dict:
     """
-    Analyze sentiment for multiple tickers using simple keyword analysis.
+    Run AI agent analysis for multiple tickers using LangChain ReAct agent.
     """
-    results = {}
-    
-    for ticker in tickers:
-        logger.info(f"Processing ticker: {ticker}")
+    try:
+        # Initialize AI components
+        initialize_ai_components()
         
-        try:
-            # Fetch news articles
-            articles = fetch_news_simple(ticker, api_key)
+        # Define tools
+        tools = [fetch_stock_news, analyze_headline_sentiment, get_stock_performance]
+        
+        # Get the ReAct prompt template
+        prompt = hub.pull("hwchase17/react")
+        
+        # Create the agent and executor
+        agent = create_react_agent(llm, tools, prompt)
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+        
+        results = {}
+        
+        for ticker in tickers:
+            logger.info(f"Running AI agent analysis for {ticker}")
             
-            if not articles:
-                logger.warning(f"No articles found for {ticker}")
-                results[ticker] = {'articles': [], 'summary': {}}
-                continue
-            
-            # Filter recent articles (last 24 hours)
-            recent_articles = []
-            for article in articles:
-                time_published = article.get('time_published', '')
-                if time_published and is_within_24_hours(time_published):
-                    recent_articles.append(article)
-            
-            if not recent_articles:
-                logger.warning(f"No recent articles found for {ticker}")
-                results[ticker] = {'articles': [], 'summary': {}}
-                continue
-            
-            # Analyze sentiment using simple keyword analysis
-            analyzed_articles = []
-            sentiment_counts = {'POSITIVE': 0, 'NEGATIVE': 0}
-            total_confidence = 0
-            
-            for article in recent_articles:
-                title = article.get('title', '')
-                if title:
-                    try:
-                        sentiment_result = simple_sentiment_analysis(title)
-                        
-                        if sentiment_result['label'] in ['POSITIVE', 'NEGATIVE']:
-                            analyzed_articles.append({
-                                'title': title,
-                                'sentiment': sentiment_result,
-                                'time_published': article.get('time_published', ''),
-                                'url': article.get('url', '')
-                            })
-                            
-                            sentiment_counts[sentiment_result['label']] += 1
-                            total_confidence += sentiment_result['score'] * 100
-                    except Exception as e:
-                        logger.warning(f"Error analyzing sentiment for article '{title[:50]}...': {e}")
-                        continue
-            
-            # Calculate summary
-            avg_confidence = total_confidence / len(analyzed_articles) if analyzed_articles else 0
-            summary = {
-                'total_articles': len(analyzed_articles),
-                'positive': sentiment_counts['POSITIVE'],
-                'negative': sentiment_counts['NEGATIVE'],
-                'avg_confidence': avg_confidence,
-                'sentiment_counts': sentiment_counts
-            }
-            
-            results[ticker] = {
-                'articles': analyzed_articles,
-                'summary': summary
-            }
-            
-            logger.info(f"Completed analysis for {ticker}: {len(analyzed_articles)} articles")
-            
-        except APIError as e:
-            if e.error_type == ErrorType.RATE_LIMIT:
-                logger.error(f"Rate limit exceeded for {ticker}")
-                results[ticker] = {'articles': [], 'summary': {}, 'error': 'Rate limit exceeded'}
-            else:
-                logger.error(f"API error for {ticker}: {e.message}")
-                results[ticker] = {'articles': [], 'summary': {}, 'error': str(e)}
-        except Exception as e:
-            logger.error(f"Unexpected error analyzing {ticker}: {e}")
-            results[ticker] = {'articles': [], 'summary': {}, 'error': str(e)}
-    
-    return results
+            try:
+                # Construct detailed prompt for the agent
+                agent_prompt = f"""
+                Your goal is to provide a comprehensive analysis of the current outlook for the stock ticker: {ticker}.
+                
+                You must use your tools in a specific, logical sequence:
+                1. First, you MUST use the 'fetch_stock_news' tool to get the raw, unanalyzed news headlines.
+                2. Next, for any significant headlines, you MUST use your own 'analyze_headline_sentiment' tool to determine their impact. Do not use any other source for sentiment.
+                3. Then, use the 'get_stock_performance' tool to get the latest price action.
+                4. Finally, synthesize all of this information into a comprehensive analysis that includes:
+                   - Overall market sentiment for this stock
+                   - Key news drivers and their impact
+                   - Current price performance context
+                   - A brief investment outlook recommendation
+                
+                Provide a detailed, professional analysis that would be valuable for an investor.
+                """
+                
+                # Run the agent
+                response = agent_executor.invoke({"input": agent_prompt})
+                summary_for_ticker = response['output']
+                
+                results[ticker] = {
+                    'summary': summary_for_ticker,
+                    'status': 'success'
+                }
+                
+                logger.info(f"AI agent analysis completed for {ticker}")
+                
+            except Exception as e:
+                logger.error(f"Error running AI agent for {ticker}: {e}")
+                results[ticker] = {
+                    'error': f"AI agent analysis failed: {str(e)}",
+                    'status': 'error'
+                }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error initializing AI agent: {e}")
+        return {ticker: {'error': f"Failed to initialize AI agent: {str(e)}", 'status': 'error'} for ticker in tickers}
 
 def run_daily_analysis(event=None, context=None):
     """
@@ -349,26 +342,23 @@ def run_daily_analysis(event=None, context=None):
     This function is triggered by Cloud Scheduler or HTTP.
     """
     try:
-        logger.info("Starting daily financial news analysis")
+        logger.info("Starting AI-powered financial news analysis")
         
-        # Get API key
-        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
-        
-        # Run analysis
-        results = analyze_tickers_simple(TICKERS, api_key)
+        # Run AI agent analysis
+        results = run_ai_agent_analysis(TICKERS)
         
         # Format results as HTML
-        summary_html = format_analysis_summary(results)
+        summary_html = format_agent_analysis_summary(results)
         
         # Send email
         email_sent = send_summary_email(summary_html)
         
         if email_sent:
-            logger.info("Daily analysis completed successfully")
-            return "Summary email sent successfully."
+            logger.info("AI agent analysis completed successfully")
+            return "AI-powered analysis completed and email sent successfully."
         else:
             logger.error("Failed to send summary email")
-            return "Analysis completed but failed to send email."
+            return "AI analysis completed but failed to send email."
             
     except Exception as e:
         logger.error(f"Error in daily analysis: {e}")

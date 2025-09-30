@@ -1,5 +1,5 @@
-# Requirements for Google Cloud Functions deployment
-# Minimal dependencies for financial news analysis
+# Requirements for AI Agent Financial Analysis Cloud Function
+# Enhanced with LangChain ReAct Agent and custom tools
 
 # Core dependencies
 requests==2.31.0
@@ -11,3 +11,20 @@ resend==0.6.0
 # Google Cloud
 google-cloud-secret-manager==2.16.0
 google-cloud-logging==3.5.0
+
+# LangChain and AI Agent dependencies
+langchain==0.1.0
+langchain-openai==0.0.5
+langchainhub==0.1.14
+
+# OpenAI API
+openai>=1.10.0
+
+# Transformers for sentiment analysis
+transformers==4.35.0
+torch>=2.6.0
+tokenizers==0.14.1
+
+# Additional ML dependencies
+numpy>=1.24.0
+scipy>=1.11.0
