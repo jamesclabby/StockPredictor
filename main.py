@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-Google Cloud Run service for Daily Financial News Analysis
-Self-contained version with all functionality included
+Google Cloud Function for Daily Financial News Analysis
+Refactored from Cloud Run to Cloud Functions
 """
 
 import os
 import json
 import logging
-import time
-import requests
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-import re
-from flask import Flask, request, jsonify
+import requests
 import resend
 from google.cloud import secretmanager
 
@@ -20,14 +17,11 @@ from google.cloud import secretmanager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create Flask app
-app = Flask(__name__)
-
 # Hardcoded tickers for analysis
 TICKERS = ['AAPL', 'GOOGL', 'TSLA']
 
 # Email configuration
-SENDER_EMAIL = "stocks@featureforge.dev"  # Resend test domain
+SENDER_EMAIL = "stocks@featureforge.dev"  # Your verified domain
 RECIPIENT_EMAIL = "jamesclabby12@gmail.com"  # Your email
 EMAIL_SUBJECT = "Daily Financial News Analysis"
 
@@ -57,7 +51,7 @@ def get_secret(secret_name: str) -> str:
             response = client.access_secret_version(request={"name": secret_name_full})
             secret_value = response.payload.data.decode("UTF-8")
             logger.info(f"Retrieved secret {secret_name} from Secret Manager")
-            return secret_value
+            return secret_value.strip()
     except Exception as e:
         logger.warning(f"Failed to retrieve {secret_name} from Secret Manager: {e}")
     
@@ -65,7 +59,7 @@ def get_secret(secret_name: str) -> str:
     secret_value = os.getenv(secret_name)
     if secret_value:
         logger.info(f"Retrieved secret {secret_name} from environment variables")
-        return secret_value
+        return secret_value.strip()
     
     raise ValueError(f"Secret {secret_name} not found in Secret Manager or environment variables")
 
@@ -172,7 +166,7 @@ def send_summary_email(summary_html: str) -> bool:
     """
     try:
         # Get Resend API key
-        resend_api_key = get_secret('RESEND_API_KEY').strip()
+        resend_api_key = get_secret('RESEND_API_KEY')
         
         # Set the API key
         resend.api_key = resend_api_key
@@ -349,16 +343,16 @@ def analyze_tickers_simple(tickers: List[str], api_key: str) -> Dict:
     
     return results
 
-@app.route('/', methods=['GET', 'POST'])
-def main():
+def run_daily_analysis(event=None, context=None):
     """
-    Main endpoint for the Cloud Run service.
+    Main entry point for Google Cloud Functions.
+    This function is triggered by Cloud Scheduler or HTTP.
     """
     try:
-        logger.info("Starting financial news analysis")
+        logger.info("Starting daily financial news analysis")
         
         # Get API key
-        api_key = get_secret('ALPHA_VANTAGE_API_KEY').strip()
+        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
         
         # Run analysis
         results = analyze_tickers_simple(TICKERS, api_key)
@@ -371,44 +365,17 @@ def main():
         
         if email_sent:
             logger.info("Daily analysis completed successfully")
-            return jsonify({
-                "status": "success",
-                "message": "Summary email sent successfully.",
-                "results": results
-            }), 200
+            return "Summary email sent successfully."
         else:
             logger.error("Failed to send summary email")
-            return jsonify({
-                "status": "partial_success",
-                "message": "Analysis completed but failed to send email.",
-                "results": results
-            }), 200
+            return "Analysis completed but failed to send email."
             
     except Exception as e:
-        logger.error(f"Error in main function: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Error: {str(e)}"
-        }), 500
+        logger.error(f"Error in daily analysis: {e}")
+        return f"Error: {str(e)}"
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint.
-    """
-    return jsonify({"status": "healthy"}), 200
-
-@app.route('/test', methods=['GET'])
-def test_endpoint():
-    """
-    Test endpoint.
-    """
-    return jsonify({
-        "message": "Test endpoint working!",
-        "environment": os.environ.get('GOOGLE_CLOUD_PROJECT', 'Not set')
-    }), 200
-
+# For local testing
 if __name__ == "__main__":
-    # For local testing
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Test the function locally
+    result = run_daily_analysis(None, None)
+    print(result)

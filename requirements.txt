@@ -1,8 +1,5 @@
-# Requirements for Cloud Run deployment
-# Minimal dependencies to avoid build issues
-
-# Web framework
-flask==2.3.3
+# Requirements for Google Cloud Functions deployment
+# Minimal dependencies for financial news analysis
 
 # Core dependencies
 requests==2.31.0
