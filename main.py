@@ -25,7 +25,7 @@ from transformers import pipeline
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Hardcoded tickers for analysis
+# Hardcoded tickers for analysis while testing
 TICKERS = ['AAPL', 'GOOGL', 'TSLA']
 
 # Email configuration
@@ -198,6 +198,51 @@ def get_stock_performance(ticker: str) -> str:
         logger.error(f"Error fetching stock performance for {ticker}: {e}")
         return f"Error fetching stock performance for {ticker}: {str(e)}"
 
+@tool
+def scan_market_for_trending_tickers() -> list[str]:
+    """
+    Scans the market using the Alpha Vantage API to find the day's top gainers and top losers.
+    Returns a list of the top 2 gainers and top 2 losers to be analyzed.
+    """
+    try:
+        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
+        url = f"https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey={api_key}"
+        
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Check for API errors
+        if 'Information' in data:
+            if 'rate limit' in data['Information'].lower():
+                logger.warning("API rate limit exceeded for market scanner")
+                return []
+            else:
+                logger.error(f"API error in market scanner: {data['Information']}")
+                return []
+        
+        if 'Note' in data:
+            if 'rate limit' in data['Note'].lower():
+                logger.warning("API rate limit exceeded for market scanner")
+                return []
+            else:
+                logger.error(f"API error in market scanner: {data['Note']}")
+                return []
+        
+        # Extract top gainers and losers
+        top_gainers = [g['ticker'] for g in data.get('top_gainers', [])[:2]]
+        top_losers = [l['ticker'] for l in data.get('top_losers', [])[:2]]
+        
+        trending_tickers = top_gainers + top_losers
+        
+        logger.info(f"Dynamically found trending tickers: {trending_tickers}")
+        return trending_tickers
+        
+    except Exception as e:
+        logger.exception("An error occurred in scan_market_for_trending_tickers.")
+        return []  # Return an empty list on failure to prevent crashes
+
 def send_summary_email(summary_html: str) -> bool:
     """
     Send the analysis summary via email using Resend.
@@ -237,35 +282,47 @@ def format_agent_analysis_summary(agent_results: Dict) -> str:
     """
     html_parts = [
         "<html><body>",
-        "<h1>🤖 AI-Powered Financial News Analysis</h1>",
+        "<h1>🤖 AI-Powered Market Trends Analysis</h1>",
         f"<p><strong>Analysis Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>",
-        "<p><em>Powered by LangChain ReAct Agent with custom financial analysis tools</em></p>",
+        "<p><em>Powered by LangChain ReAct Agent with Market Scanner and custom financial analysis tools</em></p>",
         "<hr>"
     ]
     
-    for ticker, analysis in agent_results.items():
+    # Handle the new single market analysis format
+    if 'market_analysis' in agent_results:
+        analysis = agent_results['market_analysis']
+        
         if 'error' in analysis:
-            html_parts.append(f"<h2>❌ {ticker} - Error</h2>")
+            html_parts.append("<h2>❌ Market Analysis Error</h2>")
             html_parts.append(f"<p style='color: red;'>{analysis['error']}</p>")
-            continue
-        
-        summary = analysis.get('summary', 'No analysis available')
-        
-        html_parts.append(f"<h2>📊 {ticker} AI Analysis</h2>")
-        html_parts.append(f"<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
-        html_parts.append(f"<p><strong>AI Agent Summary:</strong></p>")
-        html_parts.append(f"<p>{summary}</p>")
-        html_parts.append("</div>")
-        
-        # Add any additional insights if available
-        if 'insights' in analysis:
-            html_parts.append("<h3>🔍 Additional Insights</h3>")
-            html_parts.append(f"<p>{analysis['insights']}</p>")
-        
-        html_parts.append("<hr>")
+        else:
+            summary = analysis.get('summary', 'No analysis available')
+            
+            html_parts.append("<h2>📊 Daily Market Trends Analysis</h2>")
+            html_parts.append("<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
+            html_parts.append("<p><strong>AI Agent Market Report:</strong></p>")
+            # Convert newlines to HTML breaks for better formatting
+            formatted_summary = summary.replace('\n', '<br>')
+            html_parts.append(f"<p>{formatted_summary}</p>")
+            html_parts.append("</div>")
+    else:
+        # Fallback for old format (if needed)
+        for ticker, analysis in agent_results.items():
+            if 'error' in analysis:
+                html_parts.append(f"<h2>❌ {ticker} - Error</h2>")
+                html_parts.append(f"<p style='color: red;'>{analysis['error']}</p>")
+                continue
+            
+            summary = analysis.get('summary', 'No analysis available')
+            
+            html_parts.append(f"<h2>📊 {ticker} AI Analysis</h2>")
+            html_parts.append(f"<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
+            html_parts.append(f"<p><strong>AI Agent Summary:</strong></p>")
+            html_parts.append(f"<p>{summary}</p>")
+            html_parts.append("</div>")
     
     html_parts.extend([
-        "<p><em>This analysis was generated by an AI agent using LangChain ReAct framework with custom financial analysis tools.</em></p>",
+        "<p><em>This analysis was generated by an AI agent using LangChain ReAct framework with Market Scanner and custom financial analysis tools.</em></p>",
         "</body></html>"
     ])
     
@@ -273,14 +330,14 @@ def format_agent_analysis_summary(agent_results: Dict) -> str:
 
 def run_ai_agent_analysis(tickers: List[str]) -> Dict:
     """
-    Run AI agent analysis for multiple tickers using LangChain ReAct agent.
+    Run AI agent analysis using LangChain ReAct agent with market scanner.
     """
     try:
         # Initialize AI components
         initialize_ai_components()
         
         # Define tools
-        tools = [fetch_stock_news, analyze_headline_sentiment, get_stock_performance]
+        tools = [scan_market_for_trending_tickers, fetch_stock_news, analyze_headline_sentiment, get_stock_performance]
         
         # Get the ReAct prompt template
         prompt = hub.pull("hwchase17/react")
@@ -289,52 +346,38 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
         agent = create_react_agent(llm, tools, prompt)
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
         
-        results = {}
+        # Create the new, high-level prompt for the agent
+        master_prompt = """
+        Your mission is to create a daily market trends summary email.
+
+        First, you MUST use the 'scan_market_for_trending_tickers' tool to discover which stocks are the most significant market movers today. If the tool returns an empty list, your final answer should be a simple message like 'No trending tickers were found today.'
+
+        Then, for each of the tickers returned by that tool, you must perform a full analysis by sequentially using your other tools: fetch its news, analyze the sentiment of that news, and get its recent stock performance.
+
+        Finally, compile all the individual analyses into a single, comprehensive report formatted as a string, ready to be sent as an email. Structure the report with clear headings for each ticker.
+        """
         
-        for ticker in tickers:
-            logger.info(f"Running AI agent analysis for {ticker}")
-            
-            try:
-                # Construct detailed prompt for the agent
-                agent_prompt = f"""
-                Your goal is to provide a comprehensive analysis of the current outlook for the stock ticker: {ticker}.
-                
-                You must use your tools in a specific, logical sequence:
-                1. First, you MUST use the 'fetch_stock_news' tool to get the raw, unanalyzed news headlines.
-                2. Next, for any significant headlines, you MUST use your own 'analyze_headline_sentiment' tool to determine their impact. Do not use any other source for sentiment.
-                3. Then, use the 'get_stock_performance' tool to get the latest price action.
-                4. Finally, synthesize all of this information into a comprehensive analysis that includes:
-                   - Overall market sentiment for this stock
-                   - Key news drivers and their impact
-                   - Current price performance context
-                   - A brief investment outlook recommendation
-                
-                Provide a detailed, professional analysis that would be valuable for an investor.
-                """
-                
-                # Run the agent
-                response = agent_executor.invoke({"input": agent_prompt})
-                summary_for_ticker = response['output']
-                
-                results[ticker] = {
-                    'summary': summary_for_ticker,
-                    'status': 'success'
-                }
-                
-                logger.info(f"AI agent analysis completed for {ticker}")
-                
-            except Exception as e:
-                logger.error(f"Error running AI agent for {ticker}: {e}")
-                results[ticker] = {
-                    'error': f"AI agent analysis failed: {str(e)}",
-                    'status': 'error'
-                }
+        # Invoke the agent with the new prompt to get the final report
+        logger.info("Running AI agent with market scanner for dynamic ticker discovery")
+        final_report_dict = agent_executor.invoke({"input": master_prompt})
+        final_report_string = final_report_dict['output']
         
-        return results
+        # Return the report as a single entry for the email formatter
+        return {
+            'market_analysis': {
+                'summary': final_report_string,
+                'status': 'success'
+            }
+        }
         
     except Exception as e:
-        logger.error(f"Error initializing AI agent: {e}")
-        return {ticker: {'error': f"Failed to initialize AI agent: {str(e)}", 'status': 'error'} for ticker in tickers}
+        logger.error(f"Error running AI agent with market scanner: {e}")
+        return {
+            'market_analysis': {
+                'error': f"AI agent analysis failed: {str(e)}",
+                'status': 'error'
+            }
+        }
 
 def run_daily_analysis(event=None, context=None):
     """
@@ -344,8 +387,8 @@ def run_daily_analysis(event=None, context=None):
     try:
         logger.info("Starting AI-powered financial news analysis")
         
-        # Run AI agent analysis
-        results = run_ai_agent_analysis(TICKERS)
+        # Run AI agent analysis with market scanner
+        results = run_ai_agent_analysis([])  # Empty list since agent will discover tickers dynamically
         
         # Format results as HTML
         summary_html = format_agent_analysis_summary(results)
