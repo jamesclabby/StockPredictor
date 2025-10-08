@@ -231,8 +231,8 @@ def scan_market_for_trending_tickers() -> str:
                 return "No trending tickers available due to API error"
         
         # Extract top gainers and losers (limit to 3 each to avoid rate limits and iteration limits)
-        top_gainers = [g['ticker'] for g in data.get('top_gainers', [])[:5]]
-        top_losers = [l['ticker'] for l in data.get('top_losers', [])[:5]]
+        top_gainers = [g['ticker'] for g in data.get('top_gainers', [])[:3]]
+        top_losers = [l['ticker'] for l in data.get('top_losers', [])[:3]]
         
         trending_tickers = top_gainers + top_losers
         
