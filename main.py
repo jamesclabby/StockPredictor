@@ -199,10 +199,13 @@ def get_stock_performance(ticker: str) -> str:
         return f"Error fetching stock performance for {ticker}: {str(e)}"
 
 @tool
-def scan_market_for_trending_tickers() -> str:
+def scan_market_for_trending_tickers(dummy: str = "") -> str:
     """
     Scans the market using the Alpha Vantage API to find the day's top gainers and top losers.
     Returns a comma-separated string of the top 3 gainers and top 3 losers to be analyzed.
+    
+    Args:
+        dummy: Unused parameter (for LangChain compatibility)
     """
     try:
         api_key = get_secret('ALPHA_VANTAGE_API_KEY')
@@ -240,8 +243,11 @@ def scan_market_for_trending_tickers() -> str:
         
         # Return as comma-separated string for LangChain compatibility
         if trending_tickers:
-            return ", ".join(trending_tickers)
+            result = ", ".join(trending_tickers)
+            logger.info(f"Returning ticker string: {result}")
+            return result
         else:
+            logger.info("No trending tickers found, returning default message")
             return "No trending tickers found today"
         
     except Exception as e:

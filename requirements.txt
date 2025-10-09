@@ -13,8 +13,8 @@ google-cloud-secret-manager==2.16.0
 google-cloud-logging==3.5.0
 
 # LangChain and AI Agent dependencies
-langchain==0.1.0
-langchain-openai==0.0.5
+langchain==0.1.20
+langchain-openai==0.1.0
 langchainhub==0.1.14
 
 # OpenAI API
