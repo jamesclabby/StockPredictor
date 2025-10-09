@@ -362,7 +362,7 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
             tools=tools, 
             verbose=True,
             handle_parsing_errors=True,  # Handle LLM output parsing errors
-            max_iterations=20,  # Allow enough iterations for 6 tickers (6 * 3 tools = 18 iterations)
+            max_iterations=50,  # Allow enough iterations for 6 tickers with multiple headlines per ticker
             # early_stopping_method="generate"  # Not supported in this version  # Stop early if agent gets stuck
         )
         
