@@ -141,7 +141,7 @@ def fetch_stock_news(ticker: str) -> str:
             return f"No recent news headlines found for {ticker}"
         
         # Return headlines as a formatted string
-        headlines_text = "\n".join([f"- {headline}" for headline in headlines[:5]])  # Limit to 5 most recent
+        headlines_text = "\n".join([f"- {headline}" for headline in headlines[:3]])  # Limit to 3 most recent to reduce API calls
         return f"Recent news headlines for {ticker}:\n{headlines_text}"
         
     except Exception as e:
@@ -162,6 +162,42 @@ def analyze_headline_sentiment(headline: str) -> str:
     except Exception as e:
         logger.error(f"Error analyzing sentiment for headline: {e}")
         return f"Error analyzing sentiment: {str(e)}"
+
+@tool
+def analyze_multiple_headlines(headlines_text: str) -> str:
+    """
+    Analyzes multiple headlines' sentiment in one batch to reduce API calls.
+    Takes a newline-separated string of headlines and returns sentiment for each.
+    """
+    try:
+        headlines = [h.strip() for h in headlines_text.split('\n') if h.strip()]
+        if not headlines:
+            return "No headlines to analyze"
+        
+        # Analyze all headlines in one batch
+        results = sentiment_pipeline(headlines)
+        
+        # Format results
+        sentiment_analysis = []
+        for i, result in enumerate(results):
+            label = result['label'].title()
+            score = result['score']
+            sentiment_analysis.append(f"Headline {i+1}: {label} (Confidence: {score:.2f})")
+        
+        return "Batch sentiment analysis:\n" + "\n".join(sentiment_analysis)
+        
+    except Exception as e:
+        logger.error(f"Error in batch sentiment analysis: {e}")
+        return f"Error in batch sentiment analysis: {str(e)}"
+
+@tool
+def get_fallback_tickers() -> str:
+    """
+    Provides a list of reliable fallback tickers when the market scanner fails or returns unsupported tickers.
+    Returns major stocks that are known to work well with Alpha Vantage APIs.
+    """
+    fallback_tickers = ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA', 'NVDA']
+    return ', '.join(fallback_tickers)
 
 @tool
 def get_stock_performance(ticker: str) -> str:
@@ -201,58 +237,84 @@ def get_stock_performance(ticker: str) -> str:
 @tool
 def scan_market_for_trending_tickers(dummy: str = "") -> str:
     """
-    Scans the market using the Alpha Vantage API to find the day's top gainers and top losers.
-    Returns a comma-separated string of the top 3 gainers and top 3 losers to be analyzed.
+    Scans the market using Financial Modeling Prep API to find the most actively traded stocks.
+    Validates each ticker with Alpha Vantage news API and returns 6 working tickers.
     
     Args:
         dummy: Unused parameter (for LangChain compatibility)
     """
     try:
-        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
-        url = f"https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey={api_key}"
+        # Get FMP data
+        fmp_api_key = get_secret('FMP_API_KEY')
+        fmp_url = f"https://financialmodelingprep.com/stable/most-actives?apikey={fmp_api_key}"
         
-        response = requests.get(url, timeout=30)
+        response = requests.get(fmp_url, timeout=30)
         response.raise_for_status()
-        
         data = response.json()
         
-        # Check for API errors
-        if 'Information' in data:
-            if 'rate limit' in data['Information'].lower():
-                logger.warning("API rate limit exceeded for market scanner")
-                return "No trending tickers available due to API rate limit"
-            else:
-                logger.error(f"API error in market scanner: {data['Information']}")
-                return "No trending tickers available due to API error"
+        # Filter for NYSE and NASDAQ exchanges only
+        filtered_stocks = [
+            stock for stock in data 
+            if stock.get('exchange') in ['NYSE', 'NASDAQ']
+        ]
         
-        if 'Note' in data:
-            if 'rate limit' in data['Note'].lower():
-                logger.warning("API rate limit exceeded for market scanner")
-                return "No trending tickers available due to API rate limit"
-            else:
-                logger.error(f"API error in market scanner: {data['Note']}")
-                return "No trending tickers available due to API error"
+        if not filtered_stocks:
+            logger.warning("No stocks found after filtering")
+            return "No trending tickers available"
         
-        # Extract top gainers and losers (limit to 3 each to avoid rate limits and iteration limits)
-        top_gainers = [g['ticker'] for g in data.get('top_gainers', [])[:3]]
-        top_losers = [l['ticker'] for l in data.get('top_losers', [])[:3]]
+        # Get Alpha Vantage API key for validation
+        av_api_key = get_secret('ALPHA_VANTAGE_API_KEY')
+        working_tickers = []
         
-        trending_tickers = top_gainers + top_losers
+        # Try each ticker in order until we get 4 working ones (reduced to limit API calls)
+        for stock in filtered_stocks:
+            if len(working_tickers) >= 4:
+                break
+                
+            ticker = stock['symbol']
+            try:
+                # Test if ticker works with Alpha Vantage news API
+                test_url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={av_api_key}"
+                test_response = requests.get(test_url, timeout=10)
+                test_data = test_response.json()
+                
+                # Debug: Log the response for the first few tickers
+                if len(working_tickers) < 3:
+                    logger.info(f"Debug - {ticker} response: {str(test_data)[:200]}...")
+                
+                # Check if ticker is valid
+                if 'Information' not in test_data and 'Error Message' not in test_data:
+                    # Check if it's a rate limit note (which is OK) vs invalid ticker
+                    if 'Note' in test_data:
+                        if 'rate limit' in test_data['Note'].lower():
+                            # Rate limit is OK - ticker is valid but we hit rate limit
+                            working_tickers.append(ticker)
+                            logger.info(f"Validated ticker: {ticker} (rate limit hit)")
+                        else:
+                            logger.info(f"Skipping invalid ticker: {ticker} - {test_data['Note']}")
+                    else:
+                        # No errors - ticker is valid
+                        working_tickers.append(ticker)
+                        logger.info(f"Validated ticker: {ticker}")
+                else:
+                    logger.info(f"Skipping invalid ticker: {ticker}")
+                    
+            except Exception as e:
+                logger.info(f"Skipping ticker {ticker} due to error: {e}")
+                continue
         
-        logger.info(f"Dynamically found trending tickers: {trending_tickers}")
-        
-        # Return as comma-separated string for LangChain compatibility
-        if trending_tickers:
-            result = ", ".join(trending_tickers)
-            logger.info(f"Returning ticker string: {result}")
+        if working_tickers:
+            result = ', '.join(working_tickers)
+            logger.info(f"Found {len(working_tickers)} working tickers: {result}")
             return result
         else:
-            logger.info("No trending tickers found, returning default message")
-            return "No trending tickers found today"
+            logger.warning("No working tickers found from FMP data")
+            return "No trending tickers available"
         
     except Exception as e:
-        logger.exception("An error occurred in scan_market_for_trending_tickers.")
-        return "No trending tickers available due to technical error"
+        logger.error(f"Error in market scanner: {e}")
+        logger.info("No trending tickers found, returning default message")
+        return "No trending tickers available due to technical issues"
 
 
 def send_summary_email(summary_html: str) -> bool:
@@ -350,7 +412,7 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
         initialize_ai_components()
         
         # Define tools
-        tools = [scan_market_for_trending_tickers, fetch_stock_news, analyze_headline_sentiment, get_stock_performance]
+        tools = [scan_market_for_trending_tickers, get_fallback_tickers, fetch_stock_news, analyze_headline_sentiment, analyze_multiple_headlines, get_stock_performance]
         
         # Get the ReAct prompt template
         prompt = hub.pull("hwchase17/react")
@@ -362,7 +424,7 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
             tools=tools, 
             verbose=True,
             handle_parsing_errors=True,  # Handle LLM output parsing errors
-            max_iterations=50,  # Allow enough iterations for 6 tickers with multiple headlines per ticker
+            max_iterations=30,  # Allow enough iterations for 4 tickers with batch sentiment analysis
             # early_stopping_method="generate"  # Not supported in this version  # Stop early if agent gets stuck
         )
         
@@ -370,9 +432,14 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
         master_prompt = """
         Your mission is to create a daily market trends summary email.
 
-        First, you MUST use the 'scan_market_for_trending_tickers' tool to discover which stocks are the most significant market movers today. If the tool returns "No trending tickers found today" or similar, your final answer should be a simple message like 'No trending tickers were found today.'
+        First, you MUST use the 'scan_market_for_trending_tickers' tool to discover which stocks are the most significant market movers today. This tool will return 4 validated tickers that work with the Alpha Vantage news API.
 
-        Then, for each of the tickers returned by that tool, you must perform a full analysis by sequentially using your other tools: fetch its news, analyze the sentiment of that news, and get its recent stock performance.
+        For each ticker returned by the market scanner, perform a full analysis by:
+        1. Fetching its news using 'fetch_stock_news'
+        2. Analyzing the sentiment of that news using 'analyze_multiple_headlines' (preferred) or 'analyze_headline_sentiment' for individual headlines
+        3. Getting its recent stock performance using 'get_stock_performance'
+
+        IMPORTANT: Use 'analyze_multiple_headlines' when possible to reduce API calls. This tool can analyze multiple headlines at once.
 
         Finally, compile all the individual analyses into a single, comprehensive report formatted as a string, ready to be sent as an email. Structure the report with clear headings for each ticker.
         """
