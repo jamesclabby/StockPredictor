@@ -15,7 +15,8 @@ This project has evolved from a Streamlit web application into an advanced AI-po
 - **🛡️ Robust Error Handling**: Circuit breaker pattern, retry logic, rate limit handling
 - **🔐 Secure Secret Management**: Google Cloud Secret Manager integration
 - **💰 Cost-Effective**: Uses Resend's generous free tier (3,000 emails/month)
-- **⚡ Batch Processing**: Optimized API usage with batch sentiment analysis
+- **⚡ Optimized API Usage**: Smart fallback mechanism reduces Alpha Vantage API calls by ~50%
+- **🔄 Automatic Retry Logic**: Intelligently tries tickers until finding 3 with valid news data
 
 ## 🏗️ **Architecture**
 
@@ -90,16 +91,24 @@ gcloud scheduler jobs create http daily-financial-analysis \
 
 ## 📊 **AI Agent Analysis Process**
 
-The system uses a sophisticated AI agent workflow:
+The system uses a sophisticated AI agent workflow with optimized API usage:
 
-1. **🔍 Market Discovery**: Scans Financial Modeling Prep's "most-actives" API for trending stocks
-2. **✅ Ticker Validation**: Tests each ticker with Alpha Vantage to ensure API compatibility
-3. **📰 News Fetching**: Retrieves recent headlines for validated tickers
-4. **🧠 Sentiment Analysis**: Uses batch processing for efficient sentiment analysis
-5. **📈 Performance Check**: Gets current stock prices and daily changes
-6. **🤖 AI Synthesis**: GPT-4o agent synthesizes all data into comprehensive insights
+1. **🔍 Market Discovery**: Scans Financial Modeling Prep's "most-actives" API for trending stocks (returns 6-8 tickers from NYSE/NASDAQ)
+2. **📰 Smart News Fetching with Fallback**: 
+   - Uses `fetch_stock_news_with_fallback` tool that automatically tries tickers in order
+   - Handles errors gracefully (rate limits, invalid tickers, empty responses)
+   - Stops when 3 valid tickers with news are found (saves API calls)
+   - **No pre-validation needed** - validation happens during actual news fetch
+3. **🧠 Sentiment Analysis**: Uses batch processing for efficient sentiment analysis
+4. **📈 Performance Check**: Gets current stock prices and daily changes for the 3 successful tickers
+5. **🤖 AI Synthesis**: GPT-4o agent synthesizes all data into comprehensive insights
 
-**Fallback System**: If trending stocks fail validation, falls back to major stocks (AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA)
+**API Call Optimization**: 
+- **Before**: ~12-16 calls/day (4-8 validation + 4 news + 4 performance)
+- **After**: ~6-9 calls/day (0 validation + 3-6 news + 3 performance)
+- **Savings**: ~50% reduction in Alpha Vantage API calls
+
+**Fallback System**: If trending stocks fail, the system automatically tries the next ticker in the list until 3 valid ones are found. If all trending stocks fail, falls back to major stocks (AAPL, GOOGL, MSFT, AMZN, TSLA, NVDA)
 
 Each daily email includes:
 - **Market Overview**: AI-generated summary of trending stocks
@@ -165,11 +174,13 @@ This project evolved through several phases:
 
 ## 🎯 **Key Capabilities**
 
-- **Dynamic Market Discovery**: Finds trending stocks automatically
-- **Intelligent Analysis**: AI agents provide sophisticated reasoning
-- **Batch Processing**: Optimized API usage for efficiency
-- **Robust Fallbacks**: Graceful handling of API limits and errors
-- **Production Ready**: Scalable serverless architecture
+- **Dynamic Market Discovery**: Finds trending stocks automatically from Financial Modeling Prep
+- **Smart Fallback Mechanism**: Automatically tries tickers until finding 3 with valid news (no wasted API calls)
+- **Intelligent Analysis**: AI agents provide sophisticated reasoning with GPT-4o
+- **Optimized API Usage**: Reduces Alpha Vantage API calls by ~50% through intelligent retry logic
+- **Batch Processing**: Efficient sentiment analysis with batch processing
+- **Robust Error Handling**: Graceful handling of rate limits, invalid tickers, and API errors
+- **Production Ready**: Scalable serverless architecture with comprehensive logging
 
 ## 📄 **License**
 

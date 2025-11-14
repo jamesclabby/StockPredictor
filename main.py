@@ -101,54 +101,6 @@ def get_secret(secret_name: str) -> str:
 # Custom LangChain Tools
 
 @tool
-def fetch_stock_news(ticker: str) -> str:
-    """
-    Fetches raw news headlines from Alpha Vantage. 
-    IMPORTANT: This tool must ONLY extract and return the headline text, ignoring any pre-packaged sentiment scores.
-    """
-    try:
-        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
-        url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
-        
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        # Check for API errors
-        if 'Information' in data:
-            if 'rate limit' in data['Information'].lower():
-                return f"API rate limit exceeded for {ticker}"
-            else:
-                return f"API error: {data['Information']}"
-        
-        if 'Note' in data:
-            if 'rate limit' in data['Note'].lower():
-                return f"API rate limit exceeded for {ticker}"
-            else:
-                return f"API error: {data['Note']}"
-        
-        # Extract only the raw headlines, ignoring sentiment scores
-        articles = data.get('feed', [])
-        headlines = []
-        
-        for article in articles:
-            title = article.get('title', '')
-            if title:
-                headlines.append(title)
-        
-        if not headlines:
-            return f"No recent news headlines found for {ticker}"
-        
-        # Return headlines as a formatted string
-        headlines_text = "\n".join([f"- {headline}" for headline in headlines[:3]])  # Limit to 3 most recent to reduce API calls
-        return f"Recent news headlines for {ticker}:\n{headlines_text}"
-        
-    except Exception as e:
-        logger.error(f"Error fetching news for {ticker}: {e}")
-        return f"Error fetching news for {ticker}: {str(e)}"
-
-@tool
 def analyze_headline_sentiment(headline: str) -> str:
     """
     Analyzes a headline's sentiment using a local Hugging Face transformers model. 
@@ -189,6 +141,110 @@ def analyze_multiple_headlines(headlines_text: str) -> str:
     except Exception as e:
         logger.error(f"Error in batch sentiment analysis: {e}")
         return f"Error in batch sentiment analysis: {str(e)}"
+
+@tool
+def fetch_stock_news_with_fallback(tickers_list: str) -> str:
+    """
+    Fetches news for multiple tickers, trying each in order until 3 valid tickers with news are found.
+    Returns a formatted string mapping each successful ticker to its headlines.
+    
+    This tool automatically handles errors and empty responses by trying the next ticker.
+    Stops when 3 tickers with valid, non-empty news are found.
+    
+    Args:
+        tickers_list: Comma-separated list of tickers (e.g., "AAPL, GOOGL, TSLA, MSFT")
+    
+    Returns:
+        Formatted string with ticker-to-headlines mapping for up to 3 successful tickers.
+        Format: "Ticker: SYMBOL\nHeadlines:\n- headline1\n- headline2\n..."
+    """
+    try:
+        # Parse comma-separated tickers
+        tickers = [t.strip().upper() for t in tickers_list.split(',') if t.strip()]
+        
+        if not tickers:
+            return "Error: No tickers provided in the list"
+        
+        api_key = get_secret('ALPHA_VANTAGE_API_KEY')
+        successful_tickers = []
+        results = []
+        
+        logger.info(f"Starting fallback news fetch for {len(tickers)} tickers, targeting 3 successful")
+        
+        for ticker in tickers:
+            # Stop if we have 3 successful tickers
+            if len(successful_tickers) >= 3:
+                logger.info(f"Found 3 valid tickers, stopping early. Tickers: {', '.join(successful_tickers)}")
+                break
+            
+            try:
+                # Fetch news for this ticker
+                url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Check for API errors
+                if 'Information' in data:
+                    error_msg = data['Information']
+                    if 'rate limit' in error_msg.lower():
+                        logger.info(f"Rate limit hit for {ticker}, trying next ticker")
+                        continue
+                    else:
+                        logger.info(f"API error for {ticker}: {error_msg}, trying next ticker")
+                        continue
+                
+                if 'Note' in data:
+                    note_msg = data['Note']
+                    if 'rate limit' in note_msg.lower():
+                        logger.info(f"Rate limit note for {ticker}, trying next ticker")
+                        continue
+                    else:
+                        logger.info(f"API note for {ticker}: {note_msg}, trying next ticker")
+                        continue
+                
+                if 'Error Message' in data:
+                    logger.info(f"Error message for {ticker}: {data['Error Message']}, trying next ticker")
+                    continue
+                
+                # Extract headlines
+                articles = data.get('feed', [])
+                headlines = []
+                
+                for article in articles:
+                    title = article.get('title', '')
+                    if title:
+                        headlines.append(title)
+                
+                # Check if we have valid headlines
+                if not headlines:
+                    logger.info(f"No headlines found for {ticker}, trying next ticker")
+                    continue
+                
+                # Success! Add this ticker to results
+                successful_tickers.append(ticker)
+                headlines_text = "\n".join([f"- {headline}" for headline in headlines[:3]])  # Limit to 3 most recent
+                results.append(f"Ticker: {ticker}\nHeadlines:\n{headlines_text}")
+                logger.info(f"Successfully fetched {len(headlines)} headlines for {ticker}")
+                
+            except requests.exceptions.RequestException as e:
+                logger.info(f"Request error for {ticker}: {e}, trying next ticker")
+                continue
+            except Exception as e:
+                logger.info(f"Unexpected error for {ticker}: {e}, trying next ticker")
+                continue
+        
+        # Format final results
+        if not results:
+            return "Error: Could not fetch news for any tickers. All tickers failed or returned no headlines."
+        
+        final_result = "\n\n".join(results)
+        logger.info(f"Successfully fetched news for {len(successful_tickers)} tickers: {', '.join(successful_tickers)}")
+        return final_result
+        
+    except Exception as e:
+        logger.error(f"Error in fetch_stock_news_with_fallback: {e}")
+        return f"Error in fetch_stock_news_with_fallback: {str(e)}"
 
 @tool
 def get_fallback_tickers() -> str:
@@ -238,7 +294,7 @@ def get_stock_performance(ticker: str) -> str:
 def scan_market_for_trending_tickers(dummy: str = "") -> str:
     """
     Scans the market using Financial Modeling Prep API to find the most actively traded stocks.
-    Validates each ticker with Alpha Vantage news API and returns 6 working tickers.
+    Returns top 6-8 tickers from NYSE/NASDAQ without validation (validation happens during news fetch).
     
     Args:
         dummy: Unused parameter (for LangChain compatibility)
@@ -262,54 +318,13 @@ def scan_market_for_trending_tickers(dummy: str = "") -> str:
             logger.warning("No stocks found after filtering")
             return "No trending tickers available"
         
-        # Get Alpha Vantage API key for validation
-        av_api_key = get_secret('ALPHA_VANTAGE_API_KEY')
-        working_tickers = []
+        # Return top 6-8 tickers without validation (saves API calls)
+        # Validation will happen naturally when fetch_stock_news_with_fallback is called
+        tickers = [stock['symbol'] for stock in filtered_stocks[:8]]
         
-        # Try each ticker in order until we get 4 working ones (reduced to limit API calls)
-        for stock in filtered_stocks:
-            if len(working_tickers) >= 4:
-                break
-                
-            ticker = stock['symbol']
-            try:
-                # Test if ticker works with Alpha Vantage news API
-                test_url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={av_api_key}"
-                test_response = requests.get(test_url, timeout=10)
-                test_data = test_response.json()
-                
-                # Debug: Log the response for the first few tickers
-                if len(working_tickers) < 3:
-                    logger.info(f"Debug - {ticker} response: {str(test_data)[:200]}...")
-                
-                # Check if ticker is valid
-                if 'Information' not in test_data and 'Error Message' not in test_data:
-                    # Check if it's a rate limit note (which is OK) vs invalid ticker
-                    if 'Note' in test_data:
-                        if 'rate limit' in test_data['Note'].lower():
-                            # Rate limit is OK - ticker is valid but we hit rate limit
-                            working_tickers.append(ticker)
-                            logger.info(f"Validated ticker: {ticker} (rate limit hit)")
-                        else:
-                            logger.info(f"Skipping invalid ticker: {ticker} - {test_data['Note']}")
-                    else:
-                        # No errors - ticker is valid
-                        working_tickers.append(ticker)
-                        logger.info(f"Validated ticker: {ticker}")
-                else:
-                    logger.info(f"Skipping invalid ticker: {ticker}")
-                    
-            except Exception as e:
-                logger.info(f"Skipping ticker {ticker} due to error: {e}")
-                continue
-        
-        if working_tickers:
-            result = ', '.join(working_tickers)
-            logger.info(f"Found {len(working_tickers)} working tickers: {result}")
-            return result
-        else:
-            logger.warning("No working tickers found from FMP data")
-            return "No trending tickers available"
+        result = ', '.join(tickers)
+        logger.info(f"Found {len(tickers)} trending tickers from FMP (no validation): {result}")
+        return result
         
     except Exception as e:
         logger.error(f"Error in market scanner: {e}")
@@ -412,7 +427,7 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
         initialize_ai_components()
         
         # Define tools
-        tools = [scan_market_for_trending_tickers, get_fallback_tickers, fetch_stock_news, analyze_headline_sentiment, analyze_multiple_headlines, get_stock_performance]
+        tools = [scan_market_for_trending_tickers, get_fallback_tickers, fetch_stock_news_with_fallback, analyze_headline_sentiment, analyze_multiple_headlines, get_stock_performance]
         
         # Get the ReAct prompt template
         prompt = hub.pull("hwchase17/react")
@@ -424,7 +439,7 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
             tools=tools, 
             verbose=True,
             handle_parsing_errors=True,  # Handle LLM output parsing errors
-            max_iterations=30,  # Allow enough iterations for 4 tickers with batch sentiment analysis
+            max_iterations=30,  # Allow enough iterations for 3 tickers with batch sentiment analysis
             # early_stopping_method="generate"  # Not supported in this version  # Stop early if agent gets stuck
         )
         
@@ -432,12 +447,13 @@ def run_ai_agent_analysis(tickers: List[str]) -> Dict:
         master_prompt = """
         Your mission is to create a daily market trends summary email.
 
-        First, you MUST use the 'scan_market_for_trending_tickers' tool to discover which stocks are the most significant market movers today. This tool will return 4 validated tickers that work with the Alpha Vantage news API.
+        First, you MUST use the 'scan_market_for_trending_tickers' tool to discover which stocks are the most significant market movers today. This tool will return a list of trending tickers (typically 6-8 tickers).
 
-        For each ticker returned by the market scanner, perform a full analysis by:
-        1. Fetching its news using 'fetch_stock_news'
-        2. Analyzing the sentiment of that news using 'analyze_multiple_headlines' (preferred) or 'analyze_headline_sentiment' for individual headlines
-        3. Getting its recent stock performance using 'get_stock_performance'
+        Next, you MUST use the 'fetch_stock_news_with_fallback' tool with the full list of tickers from the market scanner. This tool will automatically try tickers in order until it finds 3 with valid news data. It handles errors and empty responses automatically by trying the next ticker.
+
+        For each of the tickers returned by 'fetch_stock_news_with_fallback' (which will be up to 3 tickers), perform analysis by:
+        1. Analyzing the sentiment of the news headlines using 'analyze_multiple_headlines' (preferred) or 'analyze_headline_sentiment' for individual headlines. Do not use both for any one unique headline.
+        2. Getting its recent stock performance using 'get_stock_performance'
 
         IMPORTANT: Use 'analyze_multiple_headlines' when possible to reduce API calls. This tool can analyze multiple headlines at once.
 
