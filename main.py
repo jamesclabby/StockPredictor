@@ -21,6 +21,9 @@ from langchain import hub
 # Transformers for sentiment analysis
 from transformers import pipeline
 
+# Markdown to HTML conversion
+import markdown
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -390,9 +393,9 @@ def format_agent_analysis_summary(agent_results: Dict) -> str:
             html_parts.append("<h2>📊 Daily Market Trends Analysis</h2>")
             html_parts.append("<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
             html_parts.append("<p><strong>AI Agent Market Report:</strong></p>")
-            # Convert newlines to HTML breaks for better formatting
-            formatted_summary = summary.replace('\n', '<br>')
-            html_parts.append(f"<p>{formatted_summary}</p>")
+            # Convert markdown to HTML
+            formatted_summary = markdown.markdown(summary, extensions=['nl2br', 'fenced_code'])
+            html_parts.append(formatted_summary)
             html_parts.append("</div>")
     else:
         # Fallback for old format (if needed)
@@ -407,7 +410,9 @@ def format_agent_analysis_summary(agent_results: Dict) -> str:
             html_parts.append(f"<h2>📊 {ticker} AI Analysis</h2>")
             html_parts.append(f"<div style='background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 10px 0;'>")
             html_parts.append(f"<p><strong>AI Agent Summary:</strong></p>")
-            html_parts.append(f"<p>{summary}</p>")
+            # Convert markdown to HTML
+            formatted_summary = markdown.markdown(summary, extensions=['nl2br', 'fenced_code'])
+            html_parts.append(formatted_summary)
             html_parts.append("</div>")
     
     html_parts.extend([

@@ -60,6 +60,12 @@ pip install -r requirements.txt
 python test_ai_agent.py
 ```
 
+**Note on Python Version Compatibility:**
+- **Cloud Functions uses Python 3.11** (as specified in deployment)
+- For **local development with Python 3.13**, you may encounter an issue installing `tiktoken==0.5.2` (required by `langchain-openai==0.0.5`) because it requires Rust to build from source
+- **Workaround for Python 3.13**: Install dependencies with `pip install -r requirements.txt --no-deps tiktoken` (uses your existing tiktoken installation)
+- **Recommended**: Use Python 3.11 for local testing to match the Cloud Functions environment exactly
+
 ### **2. Deploy to Google Cloud Functions**
 ```bash
 # Store secrets in Google Cloud Secret Manager
