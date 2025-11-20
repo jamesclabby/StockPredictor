@@ -18,9 +18,6 @@ from langchain.agents import AgentExecutor, create_react_agent, tool
 from langchain_openai import ChatOpenAI
 from langchain import hub
 
-# Transformers for sentiment analysis
-from transformers import pipeline
-
 # Markdown to HTML conversion
 import markdown
 
@@ -38,7 +35,6 @@ EMAIL_SUBJECT = "Daily Financial News Analysis - AI Agent Report"
 
 # Global variables for AI components (initialized when needed)
 llm = None
-sentiment_pipeline = None
 
 # Custom exceptions
 class ErrorType:
@@ -54,11 +50,11 @@ class APIError(Exception):
 
 def initialize_ai_components():
     """
-    Initialize AI components (LLM and sentiment pipeline) when needed.
+    Initialize AI components (LLM) when needed.
     """
-    global llm, sentiment_pipeline
+    global llm
     
-    if llm is None or sentiment_pipeline is None:
+    if llm is None:
         logger.info("Initializing AI components...")
         try:
             # Get OpenAI API key
@@ -66,9 +62,6 @@ def initialize_ai_components():
             
             # Initialize LLM
             llm = ChatOpenAI(temperature=0, model_name="gpt-4o", api_key=openai_api_key)
-            
-            # Initialize sentiment pipeline
-            sentiment_pipeline = pipeline('sentiment-analysis', model='distilbert-base-uncased-finetuned-sst-2-english')
             
             logger.info("AI components initialized successfully!")
         except Exception as e:
@@ -106,38 +99,130 @@ def get_secret(secret_name: str) -> str:
 @tool
 def analyze_headline_sentiment(headline: str) -> str:
     """
-    Analyzes a headline's sentiment using a local Hugging Face transformers model. 
-    Returns 'Positive' or 'Negative'.
+    Analyzes sentiment of a financial news headline and optional summary using GPT-4 with financial context.
+    Returns 'Positive', 'Negative', or 'Neutral'.
+    
+    Args:
+        headline: Headline text, optionally with summary on new line starting with "Summary:"
     """
     try:
-        results = sentiment_pipeline(headline)
-        label = results[0]['label'].title()
-        score = results[0]['score']
-        return f"Sentiment: {label} (Confidence: {score:.2f})"
+        # Ensure LLM is initialized
+        initialize_ai_components()
+        
+        # Check if summary is included
+        if "Summary:" in headline:
+            parts = headline.split("Summary:", 1)
+            headline_text = parts[0].strip()
+            summary_text = parts[1].strip()
+            content = f"Headline: {headline_text}\n\nSummary: {summary_text}"
+        else:
+            content = f"Headline: {headline}"
+        
+        prompt = f"""Analyze the sentiment of this financial news from the perspective of a stock investor.
+
+{content}
+
+Consider:
+- Positive: News that would likely increase stock price (gains, beats expectations, partnerships, approvals, strong earnings)
+- Negative: News that would likely decrease stock price (losses, misses expectations, lawsuits, failures, weak earnings)
+- Neutral: Mixed news, routine updates, unclear impact, or balanced information
+
+Respond with ONLY one word: Positive, Negative, or Neutral"""
+
+        response = llm.invoke(prompt)
+        sentiment = response.content.strip()
+        
+        return f"Sentiment: {sentiment}"
     except Exception as e:
-        logger.error(f"Error analyzing sentiment for headline: {e}")
+        logger.error(f"Error analyzing sentiment: {e}")
         return f"Error analyzing sentiment: {str(e)}"
 
 @tool
 def analyze_multiple_headlines(headlines_text: str) -> str:
     """
-    Analyzes multiple headlines' sentiment in one batch to reduce API calls.
-    Takes a newline-separated string of headlines and returns sentiment for each.
+    Analyzes multiple headlines' sentiment in one batch using GPT-4.
+    Takes a newline-separated string of headlines (with optional summaries) and returns sentiment for each.
+    Handles format from fetch_stock_news_with_fallback which includes "Ticker: SYMBOL" and "Headlines:" headers.
     """
     try:
-        headlines = [h.strip() for h in headlines_text.split('\n') if h.strip()]
-        if not headlines:
+        # Ensure LLM is initialized
+        initialize_ai_components()
+        
+        # Parse headlines (may include summaries and ticker headers)
+        lines = [h.strip() for h in headlines_text.split('\n') if h.strip()]
+        if not lines:
             return "No headlines to analyze"
         
-        # Analyze all headlines in one batch
-        results = sentiment_pipeline(headlines)
+        # Skip "Ticker:" and "Headlines:" header lines
+        filtered_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('Ticker:') or stripped.startswith('Headlines:'):
+                continue  # Skip header lines
+            filtered_lines.append(line)  # Keep original line with spacing
         
-        # Format results
+        if not filtered_lines:
+            return "No headlines to analyze"
+        
+        # Group lines into articles (headline + optional summary)
+        articles = []
+        current_article = []
+        
+        for line in filtered_lines:
+            stripped = line.strip()
+            if stripped.startswith('- '):
+                # New headline
+                if current_article:
+                    articles.append('\n'.join(current_article))
+                current_article = [stripped[2:]]  # Remove '- ' prefix
+            elif 'Summary:' in stripped:
+                # Summary line (may have leading spaces, handle them)
+                # Extract summary text after "Summary:"
+                if 'Summary:' in stripped:
+                    summary_text = stripped.split('Summary:', 1)[1].strip()
+                    if current_article:
+                        current_article.append(f"Summary: {summary_text}")
+            else:
+                # Continuation of current article (could be part of summary)
+                if current_article:
+                    current_article.append(stripped)
+        
+        if current_article:
+            articles.append('\n'.join(current_article))
+        
+        if not articles:
+            return "No valid headlines to analyze"
+        
+        # Analyze each article
         sentiment_analysis = []
-        for i, result in enumerate(results):
-            label = result['label'].title()
-            score = result['score']
-            sentiment_analysis.append(f"Headline {i+1}: {label} (Confidence: {score:.2f})")
+        for i, article in enumerate(articles):
+            try:
+                # Use the single headline analysis logic
+                if "Summary:" in article:
+                    parts = article.split("Summary:", 1)
+                    headline_text = parts[0].strip()
+                    summary_text = parts[1].strip()
+                    content = f"Headline: {headline_text}\n\nSummary: {summary_text}"
+                else:
+                    content = f"Headline: {article}"
+                
+                prompt = f"""Analyze the sentiment of this financial news from the perspective of a stock investor.
+
+{content}
+
+Consider:
+- Positive: News that would likely increase stock price (gains, beats expectations, partnerships, approvals, strong earnings)
+- Negative: News that would likely decrease stock price (losses, misses expectations, lawsuits, failures, weak earnings)
+- Neutral: Mixed news, routine updates, unclear impact, or balanced information
+
+Respond with ONLY one word: Positive, Negative, or Neutral"""
+
+                response = llm.invoke(prompt)
+                sentiment = response.content.strip()
+                sentiment_analysis.append(f"Headline {i+1}: {sentiment}")
+            except Exception as e:
+                logger.error(f"Error analyzing article {i+1}: {e}")
+                sentiment_analysis.append(f"Headline {i+1}: Error - {str(e)}")
         
         return "Batch sentiment analysis:\n" + "\n".join(sentiment_analysis)
         
@@ -149,7 +234,7 @@ def analyze_multiple_headlines(headlines_text: str) -> str:
 def fetch_stock_news_with_fallback(tickers_list: str) -> str:
     """
     Fetches news for multiple tickers, trying each in order until 3 valid tickers with news are found.
-    Returns a formatted string mapping each successful ticker to its headlines.
+    Returns a formatted string mapping each successful ticker to its headlines and summaries.
     
     This tool automatically handles errors and empty responses by trying the next ticker.
     Stops when 3 tickers with valid, non-empty news are found.
@@ -159,7 +244,7 @@ def fetch_stock_news_with_fallback(tickers_list: str) -> str:
     
     Returns:
         Formatted string with ticker-to-headlines mapping for up to 3 successful tickers.
-        Format: "Ticker: SYMBOL\nHeadlines:\n- headline1\n- headline2\n..."
+        Format: "Ticker: SYMBOL\nHeadlines:\n- headline1\n  Summary: summary1\n..."
     """
     try:
         # Parse comma-separated tickers
@@ -210,25 +295,46 @@ def fetch_stock_news_with_fallback(tickers_list: str) -> str:
                     logger.info(f"Error message for {ticker}: {data['Error Message']}, trying next ticker")
                     continue
                 
-                # Extract headlines
+                # Extract articles with both title and summary, deduplicating by title
                 articles = data.get('feed', [])
-                headlines = []
+                article_data = []
+                seen_titles = set()  # Track titles to avoid duplicates
                 
                 for article in articles:
-                    title = article.get('title', '')
-                    if title:
-                        headlines.append(title)
+                    title = article.get('title', '').strip()
+                    summary = article.get('summary', '').strip()
+                    
+                    if title:  # At minimum, we need a title
+                        # Normalize title for comparison (lowercase, remove extra spaces)
+                        title_normalized = ' '.join(title.lower().split())
+                        
+                        # Skip if we've already seen this title
+                        if title_normalized not in seen_titles:
+                            seen_titles.add(title_normalized)
+                            article_data.append({
+                                'title': title,
+                                'summary': summary  # May be empty, that's OK
+                            })
                 
-                # Check if we have valid headlines
-                if not headlines:
-                    logger.info(f"No headlines found for {ticker}, trying next ticker")
+                # Check if we have valid articles
+                if not article_data:
+                    logger.info(f"No articles found for {ticker}, trying next ticker")
                     continue
                 
                 # Success! Add this ticker to results
                 successful_tickers.append(ticker)
-                headlines_text = "\n".join([f"- {headline}" for headline in headlines[:3]])  # Limit to 3 most recent
+                
+                # Format articles with both headline and summary (limit to 3 most recent unique articles)
+                formatted_articles = []
+                for article in article_data[:3]:  # Limit to 3 most recent unique articles
+                    article_text = f"- {article['title']}"
+                    if article['summary']:
+                        article_text += f"\n  Summary: {article['summary']}"
+                    formatted_articles.append(article_text)
+                
+                headlines_text = "\n".join(formatted_articles)
                 results.append(f"Ticker: {ticker}\nHeadlines:\n{headlines_text}")
-                logger.info(f"Successfully fetched {len(headlines)} headlines for {ticker}")
+                logger.info(f"Successfully fetched {len(article_data)} articles for {ticker}")
                 
             except requests.exceptions.RequestException as e:
                 logger.info(f"Request error for {ticker}: {e}, trying next ticker")
@@ -264,6 +370,9 @@ def get_stock_performance(ticker: str) -> str:
     Gets the latest stock price and daily change from Alpha Vantage's GLOBAL_QUOTE endpoint.
     """
     try:
+        # Strip quotes and whitespace that the agent might include
+        ticker = ticker.strip().strip("'\"")
+        
         api_key = get_secret('ALPHA_VANTAGE_API_KEY')
         url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={ticker}&apikey={api_key}"
         
