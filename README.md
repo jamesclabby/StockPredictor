@@ -10,7 +10,7 @@ This project has evolved from a Streamlit web application into an advanced AI-po
 
 - **🤖 AI Agent Analysis**: LangChain ReAct agents with custom tools for sophisticated reasoning
 - **📈 Dynamic Market Discovery**: Uses Financial Modeling Prep API to find trending stocks
-- **🧠 Intelligent Sentiment Analysis**: Hugging Face DistilBERT + OpenAI GPT-4o hybrid approach
+- **🧠 Intelligent Sentiment Analysis**: GPT-4o analyzes sentiment using both headlines and article summaries for financial context
 - **📧 Beautiful Email Reports**: HTML-formatted summaries with comprehensive market insights
 - **🛡️ Robust Error Handling**: Circuit breaker pattern, retry logic, rate limit handling
 - **🔐 Secure Secret Management**: Google Cloud Secret Manager integration
@@ -24,8 +24,7 @@ This project has evolved from a Streamlit web application into an advanced AI-po
 - **LangChain ReAct Agents**: AI reasoning with custom tools for market analysis
 - **Financial Modeling Prep**: Real-time trending stock discovery
 - **Alpha Vantage API**: Financial news data and stock performance
-- **OpenAI GPT-4o**: Advanced reasoning and analysis synthesis
-- **Hugging Face Transformers**: Local sentiment analysis (DistilBERT)
+- **OpenAI GPT-4o**: Advanced reasoning, analysis synthesis, and financial sentiment analysis
 - **Resend**: Email delivery service (3,000 free emails/month)
 - **Google Secret Manager**: Secure API key storage
 
@@ -102,10 +101,16 @@ The system uses a sophisticated AI agent workflow with optimized API usage:
 1. **🔍 Market Discovery**: Scans Financial Modeling Prep's "most-actives" API for trending stocks (returns 6-8 tickers from NYSE/NASDAQ)
 2. **📰 Smart News Fetching with Fallback**: 
    - Uses `fetch_stock_news_with_fallback` tool that automatically tries tickers in order
+   - Fetches both headlines and article summaries from Alpha Vantage
+   - Deduplicates articles to ensure unique content
    - Handles errors gracefully (rate limits, invalid tickers, empty responses)
    - Stops when 3 valid tickers with news are found (saves API calls)
    - **No pre-validation needed** - validation happens during actual news fetch
-3. **🧠 Sentiment Analysis**: Uses batch processing for efficient sentiment analysis
+3. **🧠 GPT-4 Sentiment Analysis**: 
+   - Uses GPT-4o to analyze sentiment with financial context
+   - Analyzes both headlines and article summaries for more accurate sentiment
+   - Returns Positive, Negative, or Neutral sentiment from stock investor perspective
+   - Uses batch processing for efficient analysis
 4. **📈 Performance Check**: Gets current stock prices and daily changes for the 3 successful tickers
 5. **🤖 AI Synthesis**: GPT-4o agent synthesizes all data into comprehensive insights
 
@@ -119,9 +124,9 @@ The system uses a sophisticated AI agent workflow with optimized API usage:
 Each daily email includes:
 - **Market Overview**: AI-generated summary of trending stocks
 - **Individual Analysis**: Per-ticker sentiment and performance analysis
-- **News Headlines**: Recent headlines with sentiment scores
+- **News Headlines & Summaries**: Recent headlines with article summaries and sentiment scores
 - **Stock Performance**: Current prices and daily changes
-- **Professional HTML**: Beautiful formatting with color-coded indicators
+- **Professional HTML**: Beautiful formatting with markdown-to-HTML conversion
 
 ## 🔧 **Configuration**
 
@@ -164,14 +169,15 @@ This project evolved through several phases:
 3. **AI Agent Enhancement**: Advanced intelligence layer
    - Integrated LangChain ReAct agents
    - Added Financial Modeling Prep for market discovery
-   - Implemented batch sentiment analysis
-   - Enhanced with OpenAI GPT-4o reasoning
+   - Implemented GPT-4o sentiment analysis with financial context
+   - Enhanced with article summaries for better sentiment accuracy
+   - Added article deduplication to prevent duplicate content
 
 ## 🛠️ **Technical Details**
 
 - **Language**: Python 3.11
 - **AI Framework**: LangChain + OpenAI GPT-4o
-- **ML Framework**: Hugging Face Transformers (DistilBERT)
+- **Sentiment Analysis**: GPT-4o with financial context understanding
 - **Market Data**: Financial Modeling Prep + Alpha Vantage
 - **Email Service**: Resend (3,000 free emails/month)
 - **Deployment**: Google Cloud Functions (2GB memory, 9min timeout)
@@ -184,7 +190,8 @@ This project evolved through several phases:
 - **Smart Fallback Mechanism**: Automatically tries tickers until finding 3 with valid news (no wasted API calls)
 - **Intelligent Analysis**: AI agents provide sophisticated reasoning with GPT-4o
 - **Optimized API Usage**: Reduces Alpha Vantage API calls by ~50% through intelligent retry logic
-- **Batch Processing**: Efficient sentiment analysis with batch processing
+- **Enhanced Sentiment Analysis**: GPT-4o analyzes both headlines and summaries for accurate financial sentiment
+- **Article Deduplication**: Automatically removes duplicate articles to ensure unique content
 - **Robust Error Handling**: Graceful handling of rate limits, invalid tickers, and API errors
 - **Production Ready**: Scalable serverless architecture with comprehensive logging
 
